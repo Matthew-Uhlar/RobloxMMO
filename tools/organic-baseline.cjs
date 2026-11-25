@@ -12,9 +12,10 @@ for (const [cat, store, meta] of [['world', S.worldShapes, S.worldMeta], ['creat
     const m = meta[name];
     if (cat === 'world' && (!ORGANIC_WORLD.has(m.kind) || m.hull)) continue;
     const r = K.organicMetrics(data, m.smooth || 0);
+    // §55: a shape that meets the strict bar (and its subdivision) leaves the baseline for good.
+    if (r.dev98 <= 15 && r.sharp <= .02 && !K.subdivisionErrors(name, data, m).length) continue;
     out[name] = { catalog: cat, kind: m.kind, dev98: Math.round(r.dev98 * 10) / 10, sharp: Math.round(r.sharp * 1000) / 1000 };
   }
 }
 real('art/organic-baseline.json', JSON.stringify(out, null, 1) + '\n');
-const n = Object.keys(out).length, pass = Object.values(out).filter(v => v.dev98 <= 15 && v.sharp <= .02).length;
-log(`${n} organic shapes outside the terrain catalog; ${pass} already meet dev98 <= 15 and sharp <= 2%`);
+log(`${Object.keys(out).length} organic shapes outside the terrain catalog are still held to the baseline (the rest meet the strict bar)`);

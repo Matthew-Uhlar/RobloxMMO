@@ -193,7 +193,7 @@ print("PASS: idle loops (" .. (checks - part2) .. ")")
 -- 3. Outfit meshes: §48 facet / segment checks, palette, budgets, OBJ masters
 ------------------------------------------------------------------------------
 local part3 = checks
-local RANGE = {150, 1600}
+local RANGE = {150, 4000} -- §55: smooth re-authored outfits (filleted brims, stadium cloth)
 local HARD_EDGE_MAX, COLOUR_EDGE_MAX = 0.2, 0.16
 local function edgeRatios(data, points)
 	local edges, normals = {}, {}
@@ -282,7 +282,8 @@ for name, data in pairs(Outfits.shapes) do
 	ok(Outfits.drop ~= nil, "drop hook")
 end
 ok(count >= 30, "outfit shapes authored (" .. count .. ")")
-ok(#fs.readFile("art/OutfitCatalog.lua") <= 420 * 1024, "outfit catalog download stays under 420 KB")
+-- §55: the 35 re-authored smooth outfits (~75k triangles) raise the cap from 420 KB.
+ok(#fs.readFile("art/OutfitCatalog.lua") <= 920 * 1024, "outfit catalog download stays under 920 KB")
 for _, name in ipairs({"HatWayfarer", "HatMage", "Cloak", "PropStaff", "PropPoker"}) do
 	local data, vi, fi = Outfits.shapes[name], 0, 0
 	for line in string.gmatch(fs.readFile("art/" .. name .. ".obj"), "[^\n]+") do
@@ -302,11 +303,11 @@ local worst = 0
 for _, role in ipairs(ROSTER) do
 	local tris = 0
 	for _, p in ipairs(outfitOf(role).pieces) do tris += Outfits.shapes[p.shape].tris end
-	ok(tris <= 5200, role .. " outfit " .. tris .. " triangles <= 5200")
+	ok(tris <= 13000, role .. " outfit " .. tris .. " triangles <= 13000 (§55 smooth outfits)")
 	worst = math.max(worst, tris)
 end
-ok(worst * S.DRESS_CAP.desktop <= 75000, "desktop dressed cap within 75k placed triangles (" .. worst * S.DRESS_CAP.desktop .. ")")
-ok(worst * S.DRESS_CAP.phone <= 22000, "phone dressed cap within 22k placed triangles (" .. worst * S.DRESS_CAP.phone .. ")")
+ok(worst * S.DRESS_CAP.desktop <= 182000, "desktop dressed cap within 182k placed triangles (" .. worst * S.DRESS_CAP.desktop .. ")")
+ok(worst * S.DRESS_CAP.phone <= 39000, "phone dressed cap within 39k placed triangles (" .. worst * S.DRESS_CAP.phone .. ")")
 print(string.format("PASS: outfit meshes (%d) — %d shapes, %d triangles", checks - part3, count, total))
 
 ------------------------------------------------------------------------------

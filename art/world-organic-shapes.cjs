@@ -113,24 +113,6 @@ module.exports = ({ world, C, PI, hash }) => {
     const crowns = [[0, 8.6, .1, 2.8], [2.8, 7.2, .5, 2.2], [-2.7, 7.0, -.8, 2.3], [-.4, 7.9, 2.2, 2.1], [.8, 8.4, -1.6, 2.2], [1.5, 8.2, 1.6, 1.8]];
     crowns.forEach(([x, y, z, r], i) => lump(kit, { pos: [x, y, z], r: r * 1.05, hb: r * .62, ht: r * .85, sz: .96, seed: 30 + i, amp: .07, s: 2, steps: 4, color: leaves(30 + i) }));
   });
-  // Glimmerbark: a pale spiralling trunk, five slender branches hung with
-  // glowing seed pods, crowned by a small lit canopy and a glint.
-  world('GlimmerbarkTree', { smooth: 45, tint: '7FD3C4', kind: 'tree', maxScale: 2, sphere: [[0, 11.6, 0, 1.8, .5]] }, kit => {
-    trunk(kit, { h: 11, r0: .48, r1: .14, flare: .35, lobes: 4, seed: 41, s: 2, bark: C.MARBLE, dark: C.BARK_DARK, bend: t => [Math.cos(t * 4.4) * .35 * Math.sin(t * PI), Math.sin(t * 4.4) * .35 * Math.sin(t * PI)] });
-    const branches = [[1, 5.2, 0], [-1, 6.6, .6], [.3, 8.0, -1], [-.5, 9.4, -.2], [.8, 9.0, 1]];
-    branches.forEach(([dx, y, dz], b) => {
-      const end = [dx * 2.6, y + 1.4, dz * 2.6 + (b % 2 ? .6 : -.6)], mid = [dx * 1.3, y + 1.1, dz * 1.3];
-      limb(kit, [[0, y - .3, 0], mid, end], .17, .07, C.MARBLE);
-      lump(kit, { pos: [end[0], end[1] + .2, end[2]], r: 1.05, hb: .6, ht: .75, seed: 50 + b, amp: .07, s: 2, steps: 4, color: leaves(50 + b, TINT_LIGHT, .55) });
-      // Glowing seed pods hanging under the branch.
-      for (let k = 0; k < 2; k++) {
-        const t = .45 + k * .3, px = mid[0] + (end[0] - mid[0]) * t, pz = mid[2] + (end[2] - mid[2]) * t, py = mid[1] + (end[1] - mid[1]) * t - .5;
-        lat(kit, OK.ellipsoid(.17, py - .1, .32, .4, 6), { n: 16, color: (l, i, c) => c[1] < py - .2 ? TINT_LIGHT : TINT, wobble: () => [px, pz] });
-      }
-    });
-    lump(kit, { pos: [0, 11.5, 0], r: 1.5, hb: .9, ht: 1.1, seed: 59, amp: .07, s: 2, color: leaves(59, TINT_LIGHT, .55) });
-    lat(kit, OK.ellipsoid(.3, 12.6, .3, .7, 4), { n: 16, color: () => C.GLINT });
-  });
   // Starwood: an ink-dark leaning trunk carrying four star-lit platters
   // (scalloped rims, bright flame motes painted on top) and a flame finial.
   world('StarwoodTree', { smooth: 50, tint: '46599A', kind: 'tree', maxScale: 2 }, kit => {
@@ -311,26 +293,12 @@ module.exports = ({ world, C, PI, hash }) => {
   };
   // The bed is lofted along local Z; turn it so it runs along X.
   const soilBed = kit => kit.group({ rot: [0, PI / 2, 0] }, () => soil(kit));
-  world('CropWheat', { smooth: 50, tint: 'E9C46A', kind: 'crop', maxScale: 1.2 }, kit => {
-    soilBed(kit);
-    for (let i = 0; i < 10; i++) {
-      const x = -1.15 + (i % 5) * .57 + (hash(i, 171, 1) - .5) * .2, z = (i < 5 ? -.55 : .55) + (hash(i, 171, 2) - .5) * .2, h = 1.9 + hash(i, 171, 3) * .5, lean = (hash(i, 171, 4) - .5) * .5;
-      const tip = [x + lean, .4 + h, z + lean * .3];
-      limb(kit, [[x, .3, z], [x + lean * .3, .4 + h * .5, z], tip], .05, .035, C.LEAF);
-      // The ear: a plump spindle of grain, ridged by a soft spiral.
-      kit.group({ pos: tip, rot: [0, i, lean * .5] }, () => lat(kit, OK.ellipsoid(.15, .3, .38, .52, 6), { n: 20, color: (l, k, c) => Math.cos(4 * Math.atan2(c[2], c[0]) + c[1] * 9) > .2 ? TINT_DARK : TINT }));
-      // A leaf blade curling off the stem.
-      kit.group({ pos: [x, .5, z], rot: [0, i * 1.7, .9] }, () => kit.loft([0, 1, 2, 3, 4].map(s => {
-        const t = s / 4, w = .12 * Math.sin(PI * (.1 + .85 * t)) + .03; return { z: t * .8, points: OK.roundRect(w, .015, .015, { kArc: 4, kW: 2 }).map(([a, b]) => [a, b - .25 * t * t]) };
-      }), { capStart: false, capEnd: false, color: () => C.LEAF }));
-    }
-  });
   world('CropGlowcap', { smooth: 50, tint: 'F4A261', kind: 'crop', maxScale: 1.2 }, kit => {
     soilBed(kit);
     for (const [x, z, s, i] of [[-.8, -.4, 1.1, 0], [.35, -.5, .8, 1], [.9, .45, 1.0, 2], [-.3, .5, .7, 3], [-1.15, .5, .55, 4]]) kit.group({ pos: [x, .36, z], scale: s, rot: [0, i, (hash(i, 181, 1) - .5) * .3] }, () => {
       lat(kit, P([[0, -.05], [.2, -.05], [.16, .5], [.14, .9], [.12, 1.08], [0, 1.08]], [0, .05, .3, .1, .05]), { n: 16, color: () => C.CLOTH });
       // A glowing cap with a rounded rim and luminous gill spots on top.
-      lat(kit, OK.capProfile(.12, .62, .96, .07, .5, 5, 18), { n: 24, color: (l, k, c) => c[1] < 1.0 ? TINT_DARK : fbm([c[0] * 4, c[1] * 4, c[2] * 4], 1, 181 + i, 2) > .35 ? C.GLINT : c[1] > 1.3 ? TINT_LIGHT : TINT });
+      lat(kit, OK.capProfile(.12, .62, .96, .07, .5, 5, 18), { n: 24, color: (l, k, c) => c[1] < 1.0 ? TINT_DARK : fbm([c[0] * 4, c[1] * 4, c[2] * 4], 1, 181 + i, 2) > .35 ? C.GLINT : TINT });
     });
   });
   world('CropBloom', { smooth: 50, tint: 'B8C0FF', kind: 'crop', maxScale: 1.2 }, kit => {
@@ -352,21 +320,6 @@ module.exports = ({ world, C, PI, hash }) => {
     const berries = (c, up) => fbm([c[0] * 3.2, c[1] * 3.2, c[2] * 3.2], 1, 193, 2) > .38 && up > -.3 ? TINT : up > .4 ? C.LEAF : fbm([c[0], c[1], c[2]], 1.2, 191, 2) > .1 ? C.LEAF_DARK : C.LEAF;
     lump(kit, { pos: [-.4, 1.05, 0], r: 1.0, hb: .6, ht: .8, sz: .9, seed: 191, amp: .07, s: 1.2, steps: 5, color: berries });
     lump(kit, { pos: [.6, .95, .1], r: .85, hb: .5, ht: .68, sz: .94, seed: 192, amp: .07, s: 1.2, steps: 4, color: berries });
-  });
-  // Herb bed (round 4.6 x 1.6 slot): a ring of mossy stones round a raised soil
-  // mound, herb sprigs and small blossoms.
-  world('CropBed', { smooth: 50, tint: '9DF3D7', kind: 'crop', maxScale: 1.2 }, kit => {
-    // The stone kerb: one lumpy ring (a closed tube) instead of eleven pebbles.
-    kit.tube(Array.from({ length: 28 }, (_, i) => { const a = i * 2 * PI / 28; return [Math.cos(a) * 2.02, .2, Math.sin(a) * 2.02]; }),
-      .3, { n: 16, closed: true, color: (i, k, c) => c[1] > .38 && fbm([c[0], c[1], c[2]], 1.4, 982, 2) > 0 ? C.MOSS : C.STONE });
-    lat(kit, P([[1.95, .02], [1.9, .45], [1.4, .6], [0, .68]], [0, .2, .5]), { n: 28, color: (l, i, c) => fbm([c[0] * 1.5, 0, c[2] * 1.5], 1, 982, 2) > .3 ? C.BARK_DARK : C.SOIL });
-    const clumps = [[0, 0, 1.0], [1.05, .3, .8], [-.95, .5, .85], [.3, -1.0, .75], [-.55, -.8, .7], [.55, 1.0, .7], [-.2, 1.2, .6]];
-    clumps.forEach(([x, z, s], c) => {
-      for (let k = 0; k < 3; k++) kit.group({ pos: [x, .6, z], rot: [0, k * 2 * PI / 3 + c, .45 + hash(k, c, 983) * .3] }, () => kit.loft([0, 1, 2, 3].map(q => {
-        const t = q / 3, w = .09 * s * Math.sin(PI * (.12 + .8 * t)) + .025; return { z: t * .8 * s, points: OK.roundRect(w, .016, .016, { kArc: 4, kW: 2 }).map(([a, b]) => [a, b - .1 * t * t]) };
-      }), { capStart: false, capEnd: false, color: () => k % 3 === 0 ? TINT_LIGHT : k % 3 === 1 ? TINT : TINT_DARK }));
-      kit.blob(x, .62 + .7 * s, z, .08, .07, .08, { sub: 2, color: () => c % 2 ? C.GLINT : C.LAVENDER });
-    });
   });
   // Shrub (2.6 cube slot, sunk 0.4 into the ground): clustered leafy mounds
   // with painted berries.
@@ -435,50 +388,4 @@ module.exports = ({ world, C, PI, hash }) => {
   // =========================================================================
   // Skysailing reef and wreck (big: rock kind, range 1400).
   // =========================================================================
-  world('SkyReef', { smooth: 50, tint: '4FC3B0', kind: 'rock', range: 1400, maxScale: 1.5 }, kit => {
-    lump(kit, { pos: [0, 0, 0], r: 6.4, hb: 2.4, ht: 3.4, sz: .84, seed: 61, amp: .07, s: 1.5, color: stoneField(61) });
-    lump(kit, { pos: [-3.8, 1.4, 1.6], r: 2.6, hb: 1.8, ht: 1.8, sz: .92, seed: 62, amp: .07, s: 1.5, steps: 4, color: stoneField(62) });
-    lump(kit, { pos: [3.4, -.4, -2.2], r: 2.2, hb: 1.6, ht: 1.6, sz: .9, seed: 63, amp: .07, s: 1.5, steps: 4, color: stoneField(63, false) });
-    // Coral fans: thick rounded fan blades on the crown.
-    for (let k = 0; k < 6; k++) {
-      const a = k * 1.05 + .3, r = 3.6 + hash(k, 2, 64) * 1.8;
-      kit.group({ pos: [Math.cos(a) * r, 2.0 + hash(k, 3, 64), Math.sin(a) * r * .8], rot: [hash(k, 4, 64) * .5 - .25, a, 0] }, () => kit.group({ rot: [-PI / 2, 0, 0] }, () => kit.loft([0, 1, 2, 3, 4].map(s => {
-        const t = s / 4, w = 1.25 * Math.sin(PI * (.2 + .7 * t)) + .1; return { z: t * 2.4, points: OK.roundRect(w, .09, .09, { kArc: 4, kW: 4 }).map(([x, y]) => [x, y + .15 * Math.sin(x * 2)]) };
-      }), { capStart: false, color: (s) => s >= 3 ? TINT_LIGHT : k % 2 ? C.CORAL : TINT })));
-    }
-    for (let k = 0; k < 7; k++) {
-      const a = k * .9 + 1.7, r = 2.2 + hash(k, 5, 65) * 2, x = Math.cos(a) * r, z = Math.sin(a) * r * .8, h = 1.2 + hash(k, 6, 65) * 1.6;
-      lat(kit, P([[0, 2.0], [.3, 2.0], [.26, 2.2 + h * .6], [.36, 2.2 + h], [0, 2.3 + h]], [0, .05, .3, .15]), { n: 16, wobble: () => [x, z], color: (l, i, c) => c[1] > 2.1 + h * .8 ? TINT_LIGHT : C.CORAL });
-    }
-    for (let k = 0; k < 4; k++) limb(kit, [[-2 + k * 1.3, -2.0, .5], [-2.1 + k * 1.3, -3.2, .65], [-2.2 + k * 1.3, -4.2 - hash(k, 7, 66) * 1.5, .8]], .18, .05, C.MOSS, { capEnd: true });
-  });
-  world('SkyWreck', { smooth: 50, tint: '6E4A30', kind: 'rock', range: 1400, maxScale: 1.2 }, kit => {
-    kit.group({ rot: [0, 0, .28] }, () => {
-      // The broken hull: rounded-U sections (thick planking, open broken bow).
-      const N = 10, sections = [];
-      for (let s = 0; s <= N; s++) {
-        const t = s / N, z = -12 + 16 * t;
-        const w = Math.max(.5, 4.4 * Math.pow(Math.sin(Math.min(1, t / .7) * PI / 2), .6));
-        const top = 4.4 + 1.2 * Math.pow(1 - t, 3), keel = 1.6 * Math.pow(1 - t, 3);
-        // A thick U: a stadium strip bent round the keel (rounded rims, round
-        // bilge), stretched up to the gunwales.
-        const sweep = PI * .56, th = .32, R = w, kY = (top - keel) / (R * (1 - Math.cos(sweep)));
-        const pts = OK.roundRect(sweep * R, th / 2, th / 2, { kArc: 4, kW: 12 }).map(([x, yy]) => {
-          const a = x / R, rad = R - th / 2 + yy; return [rad * Math.sin(a), keel + kY * (R - rad * Math.cos(a))];
-        });
-        sections.push({ z, points: pts });
-      }
-      kit.loft(sections, { color: (s, e) => e % 4 === 0 ? C.BARK_DARK : s % 2 ? TINT : C.BARK });
-      for (let k = 0; k < 4; k++) {
-        const z = 5 + k * 1.6, w = 4.0 - k * .2;
-        limb(kit, [[-w, 4.0 - k * .6, z], [-w * .9, 1.8, z], [0, .5, z], [w * .9, 1.8, z], [w * .6, 3.2 - k * .5, z]], .16, .14, C.PLANK, { capStart: true, capEnd: true });
-      }
-      limb(kit, [[0, 3.6, -2], [.4, 7.2, -1.4], [.9, 8.6, -1.0]], .36, .18, C.BARK, { capEnd: true });
-      // A torn pennant on the snapped mast.
-      kit.group({ pos: [.9, 8.1, -1.0], rot: [0, PI / 2, 0] }, () => kit.loft([0, 1, 2, 3].map(q => { const t = q / 3; return { z: t * 1.6, points: OK.roundRect(.32 * (1 - .5 * t) + .05, .03, .03, { kArc: 3, kW: 2 }).map(([x, y]) => [x + .2 * Math.sin(t * 3), y]) }; }), { capStart: false, color: () => C.CRIMSON }));
-      limb(kit, [[0, 4.6, -11.5], [0, 5.0, -13], [0, 5.4, -14.5]], .2, .08, C.PLANK, { capEnd: true });
-      kit.blob(-2.4, 4.6, -6, .4, .3, .4, { sub: 2, color: () => C.BRASS });
-      kit.blob(2.0, 4.4, -2, .32, .26, .32, { sub: 2, color: () => C.IRON });
-    });
-  });
 };

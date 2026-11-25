@@ -41,12 +41,17 @@ const WORLD_TRIANGLE_RANGE = [200, 1500];
 // World Art pass 2 (§40): whole buildings and furnished interiors are single meshes.
 // Travel beacon shapes (§44, meta exactTint) share the range: >= 24-segment lathes.
 const BUILDING_TRIANGLE_RANGE = [200, 2400];
+// §55: organic world shapes (trees, rocks, ores, crops, plants, nodes) meet the
+// strict organic bar; their smooth lathed / lofted forms cost up to ~11k (the
+// big sky reef and wreck), most 2-9k.
+const ORGANIC_WORLD_RANGE = [200, 12000];
 // §48 creatures: cores (creature / pet) and the shared limbs and tier overlays.
 const CREATURE_TRIANGLE_RANGE = {creature: [400, 2400], pet: [400, 1600], limb: [100, 1600], overlay: [200, 2600]};
 // Cores worn by slayer / lair / raid / world bosses use the budget (QC H4).
 const BOSS_CORE_FLOOR = 1800;
 // §52 NPC outfits: hats, hoods, aprons, cloaks and trade props (their own catalog).
-const OUTFIT_TRIANGLE_RANGE = [150, 1600];
+// §55: the re-authored smooth outfits (filleted brims, stadium cloth, rounded caps) cost ~2-3.6k.
+const OUTFIT_TRIANGLE_RANGE = [150, 4000];
 const outfitShapes = {};
 const outfitMeta = {};
 const shapes = {};
@@ -220,8 +225,10 @@ function shape(name, build, store = shapes, precision = 10000, organic = false) 
     }
     const first=rings[0],last=rings[rings.length-1];
     const capMid=pts=>Array.isArray(pts[0])?mid(...pts):pts;
+    let ringR=0;for(const pts of local)if(Array.isArray(pts[0])){const c=mid(...pts);for(const p of pts)ringR=Math.max(ringR,Math.hypot(p[0]-c[0],p[1]-c[1],p[2]-c[2]))}
     if(capStart&&Array.isArray(first)){if(organic){const c=v(capMid(local[0]));for(let i=0;i<n;i++)tri(c,first[(i+1)%n],first[i],capColor??shade(-1,i,capMid(local[0])))}else for(let i=1;i<n-1;i++)tri(first[0],first[i+1],first[i],capColor??shade(-1,i,capMid(local[0])))}
     if(capEnd&&Array.isArray(last)){if(organic){const c=v(capMid(local[local.length-1]));for(let i=0;i<n;i++)tri(c,last[i],last[(i+1)%n],capColor??shade(profile.length,i,capMid(local[local.length-1])))}else for(let i=1;i<n-1;i++)tri(last[0],last[i],last[i+1],capColor??shade(profile.length,i,capMid(local[local.length-1])))}
+    return {ringRadius:ringR};
   }
   // Extruded outline in the local XY plane (front face toward -Z). The outline
   // must be star-shaped about its centroid; caps are fanned from that centre.
@@ -262,6 +269,7 @@ function shape(name, build, store = shapes, precision = 10000, organic = false) 
       const m=[0,1,2].map(k=>(local[a][k]+local[b][k]+local[c][k])/3);
       tri(ids[a],ids[b],ids[c],shade(n.map(q=>q/l*(dot3(n,m)<0?-1:1)),m,index));
     });
+    return {ringRadius:Math.max(rx,ry,rz)*(1+(amount||0)+(displace?.15:0))};
   }
   // Swept tube along a polyline with parallel-transport frames.
   // §55 organic shapes: the path (with its radius) is faired and flat end caps
@@ -310,6 +318,7 @@ function shape(name, build, store = shapes, precision = 10000, organic = false) 
     const ringMid=ring=>[0,1,2].map(q=>ring.reduce((t,x)=>t+x.p[q],0)/ring.length);
     if(capStart){if(organic){const c=v(ringMid(rings[0]));for(let k=0;k<n;k++)tri(c,first[(k+1)%n],first[k],capColor??shade(-1,k,ringMid(rings[0])))}else for(let k=1;k<n-1;k++)tri(first[0],first[k+1],first[k],capColor??shade(-1,k,ringMid(rings[0])))}
     if(capEnd){const R=rings[rings.length-1];if(organic){const c=v(ringMid(R));for(let k=0;k<n;k++)tri(c,last[k],last[(k+1)%n],capColor??shade(rings.length,k,ringMid(R)))}else for(let k=1;k<n-1;k++)tri(last[0],last[k],last[k+1],capColor??shade(rings.length,k,ringMid(R)))}
+    return {ringRadius:Math.max(...rad)*(jitter?1.2:1)};
   }
   // Lofted solid through closed cross-sections [{z, points:[[x,y],...]}] (equal
   // point counts, local XY at each z). color(section, edge) -> shade. The end
@@ -362,6 +371,8 @@ function shape(name, build, store = shapes, precision = 10000, organic = false) 
       while(r-l>=2){const A=[l,l+1,r],B=[l,r-1,r],aA=area(...A),aB=area(...B);let t=side?B:A;if((side?aB:aA)<1e-5)t=side?A:B;const useB=t===B;if(area(...t)>=1e-5){const [a,b,c]=t.map(q=>ring[q]);flip?tri(c,b,a,col(t[0])):tri(a,b,c,col(t[0]))}if(useB)r--;else l++;side^=1}};
     if(capStart){if(organic)zip(rings[0],true,i=>capColor??shade(-1,i));else{const c=centre(0);for(let i=0;i<m;i++)tri(c,rings[0][(i+1)%m],rings[0][i],capColor??shade(-1,i))}}
     if(capEnd){const last=rings.length-1;if(organic)zip(rings[last],false,i=>capColor??shade(rings.length,i));else{const c=centre(last);for(let i=0;i<m;i++)tri(c,rings[last][i],rings[last][(i+1)%m],capColor??shade(rings.length,i))}}
+    let ringR=0;for(const {points} of sections){const cx=points.reduce((t,p)=>t+p[0],0)/m,cy=points.reduce((t,p)=>t+p[1],0)/m;for(const p of points)ringR=Math.max(ringR,Math.hypot(p[0]-cx,p[1]-cy))}
+    return {ringRadius:ringR};
   }
   // Call log (§54 QC A4): every primitive call with its segment count / subdivision
   // and the radius of what it added (shape space), so tests can check the
@@ -372,7 +383,15 @@ function shape(name, build, store = shapes, precision = 10000, organic = false) 
     const opts=args.find(a=>a&&typeof a==='object'&&!Array.isArray(a))||{};
     const lo=[Infinity,Infinity,Infinity],hi=[-Infinity,-Infinity,-Infinity];
     for(let i=before;i<vertices.length;i++)for(let k=0;k<3;k++){lo[k]=Math.min(lo[k],vertices[i][k]);hi[k]=Math.max(hi[k],vertices[i][k])}
-    const radius=vertices.length>before?Math.max(hi[0]-lo[0],hi[2]-lo[2],prim==='blob'?hi[1]-lo[1]:0)/2:0;
+    let radius=vertices.length>before?Math.max(hi[0]-lo[0],hi[2]-lo[2],prim==='blob'?hi[1]-lo[1]:0)/2:0;
+    // §55: organic shapes log the primitive's own largest ring radius (scaled by
+    // the group stack), not its bounding box: a lathe moved by `wobble` or a
+    // closed tube loop is judged by its rings.
+    if(organic&&r&&typeof r.ringRadius==='number'){
+      const T=p=>{for(let i=stack.length-1;i>=0;i--)p=stack[i](p);return p},o=T([0,0,0]);
+      const k=Math.max(...[[1,0,0],[0,1,0],[0,0,1]].map(e=>Math.hypot(...T(e).map((x,q)=>x-o[q]))));
+      radius=Math.min(radius,r.ringRadius*k);
+    }
     calls.push({f0,f1:faces.length,prim,n:prim==='lathe'||prim==='tube'?Math.max(opts.n??(prim==='lathe'?8:6),organic?16:0):prim==='loft'?args[0][0].points.length:undefined,sub:prim==='blob'?Math.max(opts.sub??1,organic?2:0):undefined,radius:Math.round(radius*1000)/1000});
     return r;
   };
@@ -682,7 +701,7 @@ shape('OreCluster',({lathe,group})=>{
 // ---------------------------------------------------------------------------
 function world(name,meta,build){
   if(shapes[name]||worldShapes[name])throw new Error(`Duplicate shape name ${name}`);
-  shape(name,build,worldShapes,1000,ORGANIC_WORLD_KINDS.has(meta.kind)&&!meta.hull);worldMeta[name]=meta;
+  shape(name,build,worldShapes,1000,ORGANIC_WORLD_KINDS.has(meta.kind)&&!meta.hull&&!meta.legacy);worldMeta[name]=meta;
 }
 require('./world-shapes.cjs')({world,C,PI,hash,jitterOf});
 require('./region-shapes.cjs')({world,C,PI,hash,jitterOf});
@@ -695,7 +714,7 @@ require('./world-organic-shapes.cjs')({world,C,PI,hash}); // §55 organic re-aut
 function creature(name,meta,build){
   if(shapes[name]||worldShapes[name]||creatureShapes[name])throw new Error(`Duplicate shape name ${name}`);
   if(!CREATURE_TRIANGLE_RANGE[meta.kind])throw new Error(`${name}: unknown creature kind ${meta.kind}`);
-  shape(name,build,creatureShapes,1000,true);creatureMeta[name]=meta;
+  shape(name,build,creatureShapes,1000,false);creatureMeta[name]=meta; // §55: creatures keep their §48 build (organic baseline) until re-authored
 }
 const creatureKit=require('./creature-shapes.cjs')({creature,C,PI,hash,jitterOf});
 // NPC outfits (§52): forged on each client by npc.client.lua through the
@@ -710,7 +729,7 @@ require('./outfit-shapes.cjs')({outfit,C,PI,hash,jitterOf});
 // cliff dressing and satellite rocks; their own lazily decoded catalog
 // (art/TerrainCatalog.lua), placed by terrain.client.lua through the forge's
 // "dress" pool. Smooth-shaded and facet-checked below.
-if(global.__aetherKit)global.__aetherKit({shape,organicMetrics:(...a)=>organicMetrics(...a),C,hash});
+if(global.__aetherKit)global.__aetherKit({shape,organicMetrics:(...a)=>organicMetrics(...a),subdivisionErrors:(...a)=>subdivisionErrors(...a),C,hash});
 const TERRAIN_TRIANGLE_RANGE = {clutter: [100, 2000], shrub: [150, 2000], rock: [300, 2400], foliage: [400, 7000], cliff: [150, 2900], satellite: [300, 3000]};
 // §54 QC A2-A4 (organic): 98 % of corner shading normals within 15 deg of their
 // face, <= 2 % of shared edges sharper than 35 deg (whatever the crease), and
@@ -744,7 +763,7 @@ function organicMetrics(data, smooth) {
 function subdivisionErrors(name, data, meta) {
   const seg = meta.lod === 'far' || meta.kind === 'satellite' || meta.kind === 'cliff' ? SEG_FAR : SEG_NEAR, scale = meta.maxScale || 1, out = [];
   for (const c of data.calls) {
-    if (c.prim === 'lathe' || c.prim === 'tube') {
+    if (c.prim === 'lathe' || c.prim === 'tube' || c.prim === 'loft') {
       const need = Math.max(16, Math.ceil(2 * Math.PI * c.radius * scale / seg));
       if (c.n < need) out.push(`${name}: ${c.prim} n ${c.n} < ${need} for radius ${c.radius} x ${scale}`);
     } else if (c.prim === 'blob') {
@@ -819,7 +838,7 @@ function hullErrors(name, data) {
 const hullReport = [];
 const rangeErrors=[];
 for(const [name,data] of Object.entries(worldShapes)){
-  const count=data.faces.length,range=worldMeta[name].hull?HULL_TRIANGLE_RANGE:worldMeta[name].kind==='building'||worldMeta[name].exactTint?BUILDING_TRIANGLE_RANGE:WORLD_TRIANGLE_RANGE;
+  const count=data.faces.length,range=worldMeta[name].hull?HULL_TRIANGLE_RANGE:ORGANIC_WORLD_KINDS.has(worldMeta[name].kind)&&!worldMeta[name].legacy?ORGANIC_WORLD_RANGE:worldMeta[name].kind==='building'||worldMeta[name].exactTint?BUILDING_TRIANGLE_RANGE:WORLD_TRIANGLE_RANGE;
   if(count<range[0]||count>range[1])rangeErrors.push(`${name} has ${count} triangles; ${worldMeta[name].kind} range is ${range.join('-')}`);
   for(const vol of componentVolumes(data))if(vol<-1e-4)throw new Error(`${name} has an inward-wound component (volume ${vol})`);
   if(worldMeta[name].hull)rangeErrors.push(...hullErrors(name,data));
@@ -879,7 +898,7 @@ for(const [name,data] of [...Object.entries(shapes),...Object.entries(worldShape
   if(!palette[shade-1])throw new Error(`${name} uses unknown shade ${shade}`);
 }
 // Tooling hook (survey / diagnostic scripts; unused by the build).
-if(global.__aetherShapes)global.__aetherShapes({shapes,worldShapes,worldMeta,creatureShapes,creatureMeta,outfitShapes,outfitMeta,terrainShapes,terrainMeta,palette});
+if(global.__aetherShapes)global.__aetherShapes({shapes,worldShapes,worldMeta,creatureShapes,creatureMeta,outfitShapes,outfitMeta,terrainShapes,terrainMeta,palette,rigs:creatureKit.rigs});
 if(global.__aetherShapesOnly)return;
 const iconShapeLua = `
 -- Item icon art: Catalog.iconShape(itemDef) -> shape name for an AetherData item.

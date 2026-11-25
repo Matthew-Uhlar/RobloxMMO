@@ -89,7 +89,8 @@ local catalogBytes = #fs.readFile("art/WorldCatalog.lua")
 -- §51: the Skysailing kit (3 hulls, mast, helm, cannon, dock, board, bollard, slip, reef, wreck, buoy: ~13.7k triangles, ~137 KB) raised it to 1300 KB.
 -- §54 QC A2/A3: the five island hulls became 80-segment, 24-28-level smooth strata (chord <= 0.15 studs on the
 -- largest island): ~+28k triangles, ~+300 KB; the cap rises to 1700 KB.
-check(catalogBytes <= 1700 * 1024, "world catalog download stays under 1700 KB (" .. catalogBytes .. " bytes)")
+-- §55: the re-authored organic world shapes (27 trees, rocks, ores, crops, plants, nodes; ~+150k triangles) raise it to 2800 KB.
+check(catalogBytes <= 2800 * 1024, "world catalog download stays under 2800 KB (" .. catalogBytes .. " bytes)")
 -- Packed geometry decodes to exactly the OBJ masters' vertices and faces.
 for _, name in ipairs({"Skyship", "ZipLine", "SnareTrap", "StormSpire", "WindpineTree"}) do
 	local data, vi, fi = World.shapes[name], 0, 0
@@ -134,7 +135,7 @@ local worldTriangles, worldCount = 0, 0
 for name, data in pairs(World.shapes) do
 	worldCount += 1
 	worldTriangles += #data.faces
-	local points = validate(name, data, 200, if string.sub(name, 1, 6) == "Island" then 8000 elseif data.kind == "building" or data.exactTint == true then 2400 else 1500)
+	local points = validate(name, data, 200, if string.sub(name, 1, 6) == "Island" then 8000 elseif data.kind == "building" or data.exactTint == true then 2400 elseif data.maxScale then 12000 else 1500) -- §55: re-authored organic shapes (meta.maxScale) to 12k
 	check(type(data.smooth) == "number" and data.smooth >= 0 and data.smooth < 90, name .. " smoothing crease")
 	check(type(data.kind) == "string", name .. " kind")
 	if data.tint then check(pcall(Color3.fromHex, data.tint), name .. " default tint") end
@@ -1471,7 +1472,38 @@ for name, b in pairs(Baseline) do
 	ratchet += 1
 	if dev98 <= 15 and sharp <= 0.02 then meeting += 1 end
 end
-check(ratchet >= 100, "organic baseline covers the other catalogs (" .. ratchet .. ")")
+check(ratchet >= 60 and ratchet <= 131, "organic baseline holds only the shapes not yet re-authored (" .. ratchet .. ")")
+-- §55: every organic world / outfit shape outside the baseline meets the strict
+-- bar (the terrain checks above): dev98 <= 15, sharp <= 2 %, rings >= 16 and
+-- fine enough for meta.maxScale, blobs subdivided; a re-authored shape never
+-- returns to the baseline (tools/organic-baseline.cjs skips shapes that pass).
+local ORGANIC_KINDS = {tree = true, rock = true, ore = true, crop = true, plant = true, node = true}
+local strictOrganic = 0
+for _, pair in ipairs({{"world", World}, {"outfit", Outfits}, {"creature", Creatures}}) do
+	local cat, catalog = pair[1], pair[2]
+	for name, data in pairs(catalog.shapes) do
+		local organicKind = cat ~= "world" or (ORGANIC_KINDS[data.kind] and not data.fit and string.sub(name, 1, 6) ~= "Island")
+		if organicKind and Baseline[name] == nil then
+			strictOrganic += 1
+			meeting += 1
+			local dev98, sharp = organic(data, data.smooth or 0)
+			check(dev98 <= 15.05, string.format("%s normal deviation (98th pct, area) %.1f <= 15 (§55 strict)", name, dev98))
+			check(sharp <= 0.02, string.format("%s sharp edges %.2f%% <= 2%% (§55 strict)", name, sharp * 100))
+			local log = Calls.shapes[name]
+			check(log ~= nil and log.catalog == cat, name .. " has a generator call log")
+			local scale = log.maxScale or 1
+			for _, c in ipairs(log.calls) do
+				check(c.prim == "lathe" or c.prim == "tube" or c.prim == "blob" or c.prim == "loft", name .. " uses only smooth primitives (" .. c.prim .. ")")
+				if c.prim == "blob" then
+					check(c.sub >= math.max(2, math.ceil(math.log(1.05 * c.radius * scale / SEG_NEAR, 2))), name .. " blob subdivided for its placed size")
+				else
+					check(c.n >= math.max(16, math.ceil(2 * math.pi * c.radius * scale / SEG_NEAR)), name .. " " .. c.prim .. " segments for its placed size (n " .. c.n .. ")")
+				end
+			end
+		end
+	end
+end
+check(strictOrganic >= 62, "re-authored organic shapes held to the strict bar (" .. strictOrganic .. ")")
 print(string.format("§54 mesh QA: per-vertex colour on %d shapes (worst in-family step %.3f); %d terrain shapes strict; %d hulls at real scale; %d organic shapes held to the baseline (%d meet the strict bar).",
 	colourShapes, worstDL, terrainStrict, hullShapes, ratchet, meeting))
 

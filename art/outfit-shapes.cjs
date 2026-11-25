@@ -115,7 +115,7 @@ module.exports = ({ outfit, C, PI }) => {
   // Tinker's goggles: a padded strap following the square head, deep brass
   // cups with rolled rims, domed lenses, a nose bridge and a buckle.
   outfit('HatGoggles', { smooth: HARD, tint: '2B2B2B', kind: 'outfit', slot: 'head' }, kit => {
-    ring(kit, { pos: [0, .33, 0], R: .66, r: .07, N: 28, ex: 5, color: LEATHER });
+    ring(kit, { pos: [0, .33, 0], R: .66, r: .07, N: 32, ex: 5, color: LEATHER });
     for (const x of [-.27, .27]) {
       forward(kit, [x, .33, -.64], P([[0, -.02], [.2, -.02], [.215, .1], [.19, .15], [.15, .13], [0, .13]], [0, .02, .03, .02, .02]), { n: 20, color: byR([.165, GLASS], [9, BRASS]) });
       forward(kit, [x, .33, -.77], P([[.15, 0], [.12, .045], [0, .07]], [0, .04]), { n: 20, color: () => GLASS });
@@ -323,7 +323,7 @@ module.exports = ({ outfit, C, PI }) => {
   outfit('PropCrate', { smooth: HARD, tint: 'C0392B', kind: 'outfit', slot: 'hand' }, kit => {
     roundBox(kit, { pos: [-.7, -.05, -.6], len: .9, w: 1.2, h: .8, rc: .07, steps: 6, kW: 3, kH: 3, cols: [C.PLANK, C.BARK, C.PLANK, C.PLANK, C.BARK, C.PLANK, C.PLANK] });
     for (const [x, z] of [[-1.0, -.4], [-.7, -.55], [-.4, -.42], [-.85, -.8], [-.52, -.78]])
-      kit.blob(x, .42, z, .17, .155, .17, { sub: 2, color: (n, m) => m[1] > .08 ? TL : T });
+      kit.blob(x, .42, z, .17, .155, .17, { sub: 2, color: (nrm, mid, _f) => mid[1] > .08 ? TL : T });
   });
   // Scroll: a parchment roll on turned handles with a wax seal.
   outfit('PropScroll', { smooth: HARD, tint: 'C9A227', kind: 'outfit', slot: 'hand' }, kit => {

@@ -43,12 +43,12 @@ local UserInputService = game:GetService("UserInputService")
 local mobile = false
 pcall(function() mobile = UserInputService.TouchEnabled == true and UserInputService.KeyboardEnabled ~= true end)
 local LIMITS = if mobile then {
-	templates = 24, templateTriangles = 30000, instances = 400, placedTriangles = 150000, failures = 3,
+	templates = 24, templateTriangles = 50000, instances = 400, placedTriangles = 150000, failures = 3, -- §55: smooth organic shapes (2-9k) need the larger template pool
 } else {
 	templates = 72, -- distinct (shape, tint) EditableMeshes kept alive (§30: island hulls, bridges, landmarks; §40: +8 for the town buildings); idle ones are LRU-evicted
-	templateTriangles = 90000, -- triangles across all cached EditableMeshes (§40: whole-building meshes are ~2k each)
+	templateTriangles = 240000, -- triangles across all cached EditableMeshes (§40: whole-building meshes are ~2k each; §55: organic trees / rocks 2-9k)
 	instances = 900, -- placed MeshPart clones near the player
-	placedTriangles = 600000, -- triangles across all placed clones
+	placedTriangles = 900000, -- triangles across all placed clones (§55: smooth organic world shapes)
 	failures = 3, -- template build failures before the forge stops trying
 }
 local BUILD_RADIUS, UNLOAD_RADIUS = if mobile then 250 else 400, if mobile then 310 else 480
@@ -188,7 +188,7 @@ local creaturePool = {failures = 0, blocked = false, stop = stopReason} -- (no E
 -- variant per shape. Only idle outfit templates are evicted for outfits (LRU).
 local OUTFIT_KINDS = {outfit = true}
 local OUTFIT_TEMPLATE_CAP = if mobile then 18 else 52
-local OUTFIT_TRIANGLE_CAP = if mobile then 20000 else 52000
+local OUTFIT_TRIANGLE_CAP = if mobile then 40000 else 160000 -- §55 smooth outfits (NpcStyle.POOL)
 -- QC H1 / L: outfit clones are counted on their own (never against the world's
 -- LIMITS.instances / placedTriangles), bounded by the dressed-NPC cap.
 local OUTFIT_INSTANCE_CAP = if mobile then 40 else 120

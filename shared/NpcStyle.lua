@@ -407,10 +407,10 @@ end
 -- Animation level of detail by distance: 2 = 30 Hz, 1 = 15 Hz, 0 = off.
 S.ANIM_RANGE = {desktop = {full = 45, half = 90}, phone = {full = 25, half = 55}}
 S.DRESS_RANGE = {desktop = 90, phone = 50} -- forged outfits within this many studs
-S.DRESS_CAP = {desktop = 14, phone = 4} -- most NPCs dressed in meshes at once (nearest win)
+S.DRESS_CAP = {desktop = 14, phone = 3} -- most NPCs dressed in meshes at once (nearest win)
 -- Outfit pool the dressed sets must fit (forge.client.lua OUTFIT_*; verify-npcart sums the
 -- distinct templates of the worst-case dressed set per region against both).
-S.POOL = {desktop = {templates = 52, triangles = 52000}, phone = {templates = 18, triangles = 20000}}
+S.POOL = {desktop = {templates = 52, triangles = 160000}, phone = {templates = 18, triangles = 40000}} -- §55: smooth outfits are 1-3.7k each
 -- Most NPCs animated at once (nearest win; QC L), re-ranked every 0.5 s.
 S.ANIM_CAP = {desktop = 18, phone = 8}
 function S.lod(distance, phone)

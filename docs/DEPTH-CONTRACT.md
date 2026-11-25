@@ -1328,3 +1328,12 @@ The QC review of §54 found that the art problem is game-wide: per-face palette 
   - the dense near-LOD trees on desktop frame rate (16 × ~5–7k tris);
   - phone memory with the 12-template dress pool;
   - SnowPine's snow amount.
+
+### §55 Organic re-authoring (partial; wrapped up early)
+
+- **Kit (`art/organic-kit.cjs`, `art/generate-props.cjs`).** For organic shapes the lathe / tube / loft primitives fair their profiles and paths (centripetal Catmull-Rom, <= 10 degrees a level), triangulate bands as a checkerboard (unbiased area-weighted normals), give flat ends rounded rims inside their own extent, close caps by zipping across the section, support closed tube loops, and log each primitive's real ring radius to `art/ShapeCalls.json`. Helpers: `rounded` (filleted profiles), `roundRect` (stadium / rounded-box sections), `ellipsoid`, `dome`, `bowl`, `capProfile`, `fbm`.
+- **Re-authored and strict (62 shapes, out of the baseline):** all 35 NPC outfits (`art/outfit-shapes.cjs`: ribbons and bands as ridges in filleted brim profiles, stadium cloth, rounded boxes, closed rings) and 27 world organic shapes (`art/world-organic-shapes.cjs`: flared fbm trunks, lathed lumpy crowns with `sphere` normals, soft hexagonal crystals, lofted crop beds, painted blossoms and berries; `meta.maxScale` per shape). verify-mesh checks every organic world / outfit shape outside the baseline against the strict bar (dev98 <= 15, sharp <= 2 %, subdivision by maxScale, smooth primitives only).
+- **Still in `art/organic-baseline.json` (69):** the 64 creature shapes (kept at their §48 build; a lean re-authoring was in progress but did not fit the rig budgets yet) and GlimmerbarkTree, CropWheat, CropBed, SkyReef, SkyWreck (their re-authored versions exceeded the 4095-vertex packing limit; `meta.legacy` keeps the old build). `tools/organic-baseline.cjs` never re-adds a passing shape.
+- **Budgets raised:** organic world shapes 200-12000 triangles (WorldCatalog cap 1700 -> 2800 KB); outfits 150-4000 (OutfitCatalog cap 420 -> 920 KB); world forge pool templateTriangles 90k -> 240k desktop, 30k -> 50k phone, placed 600k -> 900k desktop; outfit pool 52k -> 160k desktop, 20k -> 40k phone (NpcStyle.POOL); per-NPC outfit <= 13000, phone DRESS_CAP 4 -> 3.
+- **Not done:** forged cliff-wall strata / ledges / crystal cracks; creature re-authoring; previews were not regenerated.
+- **Needs Studio judgement:** the smooth trees / rocks / ores and outfits under Future lighting; phone frame rate and memory with the larger world and outfit pools.

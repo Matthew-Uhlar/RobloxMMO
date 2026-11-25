@@ -685,4 +685,44 @@ module.exports = ({ world, C, PI, hash, jitterOf }) => {
   // §42 Gathering Feel: depleted node variants (client-local mesh slots, no
   // server parts). Uniform fit: the slot box is the node's footprint.
   // -------------------------------------------------------------------------
+
+  // §55: kept at their §42 build (organic baseline) - the re-authored versions
+  // exceeded the 4095-vertex packing limit.
+  world('GlimmerbarkTree', { legacy: true, smooth: 45, tint: '7FD3C4', kind: 'tree' }, kit => {
+    const trunk = [];
+    for (let i = 0; i <= 8; i++) { const y = i * 1.35, a = i * .55; trunk.push([Math.cos(a) * .35 * Math.sin(i / 8 * PI), y, Math.sin(a) * .35 * Math.sin(i / 8 * PI)]) }
+    kit.tube(trunk, i => .48 - i * .045, { n: 6, color: (i, k) => (i % 3 === 1 ? C.BARK_DARK : C.MARBLE), capStart: true });
+    roots(kit, 4, .45, .7, 41, C.MARBLE, .24);
+    const branches = [[1, 5.2, 0], [-1, 6.6, .6], [.3, 8.0, -1], [-.5, 9.4, -.2], [.8, 9.0, 1]];
+    branches.forEach(([dx, y, dz], b) => {
+      const end = [dx * 2.6, y + 1.4, dz * 2.6 + (b % 2 ? .6 : -.6)], mid = [dx * 1.3, y + 1.1, dz * 1.3];
+      kit.tube([[0, y - .3, 0], mid, end], [.16, .11, .05], { n: 4, color: C.MARBLE });
+      for (let k = 0; k < 6; k++) {
+        const t = .35 + k * .13, px = mid[0] + (end[0] - mid[0]) * t + (hash(k, b, 1) - .5) * .9, pz = mid[2] + (end[2] - mid[2]) * t + (hash(k, b, 2) - .5) * .9;
+        const py = mid[1] + (end[1] - mid[1]) * t - .45 - hash(k, b, 3) * .4;
+        kit.jewel(px, py, pz, .2, .48, .2, k % 3 === 0 ? TINT_LIGHT : TINT);
+      }
+      kit.blob(end[0], end[1] + .25, end[2], 1.1, .8, 1.1, { sub: 1, amount: .2, seed: 50 + b, squash: .6, color: foliage(50 + b) });
+    });
+    kit.blob(0, 11.6, 0, 1.5, 1.1, 1.5, { sub: 1, amount: .18, seed: 59, color: foliage(59) });
+    kit.jewel(0, 12.9, 0, .32, .7, .32, C.GLINT);
+  });
+  world('CropWheat', { legacy: true, smooth: 40, tint: 'E9C46A', kind: 'crop' }, kit => {
+    soil(kit);
+    for (let i = 0; i < 10; i++) {
+      const x = -1.15 + (i % 5) * .57 + (hash(i, 171, 1) - .5) * .2, z = (i < 5 ? -.55 : .55) + (hash(i, 171, 2) - .5) * .2, h = 1.9 + hash(i, 171, 3) * .5, lean = (hash(i, 171, 4) - .5) * .5;
+      kit.tube([[x, .4, z], [x + lean * .3, .4 + h * .5, z], [x + lean, .4 + h, z + lean * .3]], [.05, .045, .035], { n: 4, color: C.LEAF });
+      kit.group({ pos: [x + lean, .4 + h, z + lean * .3], rot: [0, i, lean * .5] }, () => kit.lathe([[.06, -.05], [.14, .2], [.13, .55], [0, .8]], { n: 5, color: (l, k) => k % 2 ? TINT : TINT_DARK }));
+      kit.group({ pos: [x, .5, z], rot: [0, i * 1.7, .9] }, () => kit.jewel(0, .35, 0, .05, .4, .12, C.LEAF));
+    }
+  });
+  world('CropBed', { legacy: true, smooth: 40, tint: '9DF3D7', kind: 'crop' }, kit => {
+    for (let i = 0; i < 11; i++) { const a = i * 2 * PI / 11; kit.blob(Math.cos(a) * 2.02, .26, Math.sin(a) * 2.02, .34, .28, .3, { sub: 0, amount: .15, seed: 981 + i, color: rock(981 + i) }) }
+    kit.lathe([[1.95, .05], [1.92, .48], [1.55, .6], [.8, .66], [0, .68]], { n: 12, color: (l, i) => l >= 2 && hash(i, 982, l) < .3 ? C.BARK_DARK : C.SOIL });
+    const clumps = [[0, 0, 1.0], [1.05, .3, .8], [-.95, .5, .85], [.3, -1.0, .75], [-.55, -.8, .7], [.55, 1.0, .7], [-.2, 1.2, .6]];
+    clumps.forEach(([x, z, s], c) => {
+      for (let k = 0; k < 5; k++) kit.group({ pos: [x, .62, z], rot: [0, k * 2 * PI / 5 + c, .45 + hash(k, c, 983) * .3] }, () => kit.jewel(0, .42 * s, 0, .09 * s, .44 * s, .05 * s, k % 3 === 0 ? TINT_LIGHT : k % 3 === 1 ? TINT : TINT_DARK));
+      kit.jewel(x, .62 + .78 * s, z, .07, .07, .07, c % 2 ? C.GLINT : C.LAVENDER);
+    });
+  });
 };
