@@ -167,7 +167,9 @@ local function nearPortal(player)
 end
 local function busyElsewhere(player)
 	local lair, game_ = player:GetAttribute("LairBoss"), player:GetAttribute("MinigameGame")
+	local story = player:GetAttribute("StoryFight") -- §53 QC M1: a story encounter is elsewhere too
 	return player:GetAttribute("DungeonInRun") == true or (type(lair) == "string" and lair ~= "") or (type(game_) == "string" and game_ ~= "")
+		or (type(story) == "string" and story ~= "")
 end
 
 -- Lobbies ------------------------------------------------------------------------------

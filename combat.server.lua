@@ -3195,6 +3195,12 @@ local function createLogic(env)
 		function L.lrRefusal(player, r)
 			local refusal = storyRefusal(player, r)
 			if refusal then return refusal end
+			-- QC M2: a story member strikes only from inside the arena (lrPlayers' range).
+			local boss = if r and r.lair then r elseif r and r.lairAdd then r.parent else nil
+			if boss and boss.story then
+				local pos = positionOf(player)
+				if not pos or flatDist(pos, boss.center) > LR.ARENA_RANGE then return "outside" end
+			end
 			return L.stShrouded(player, r)
 		end
 		local storyTick = L.lrTick
@@ -3987,7 +3993,7 @@ end
 -- Telegraphs reuse the world-boss FX (telegraph / bossStrike); a tile lattice
 -- lights its charged tile parts (Neon) for the windup instead.
 DENY_REASONS.order, DENY_REASONS.lair, DENY_REASONS.sealed = true, true, true
-DENY_REASONS.shrouded = true -- §53 Story: Gloamwick cannot be struck outside the lantern light
+DENY_REASONS.shrouded, DENY_REASONS.outside = true, true -- §53 Story: Gloamwick outside the lantern light; members outside the arena (QC M2)
 local LairRT = {tiles = {}, lit = {}}
 local STANCE_COLOR = {melee = Color3.fromRGB(255, 120, 110), ranged = Color3.fromRGB(150, 225, 120), magic = Color3.fromRGB(140, 170, 255)}
 local ROMAN_ORDER = {"I", "II", "III", "IV"}

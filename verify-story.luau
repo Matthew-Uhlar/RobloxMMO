@@ -325,6 +325,43 @@ do
 	for _, spec in ipairs({"anchor:Story_GloamGate", "npc:StoryArchivist", "anchor:Dock_Tidewater"}) do ok(T.parseTarget(spec) ~= nil, spec .. " is a Wayfinder target") end
 	eq(Data.Features.announceText({kind = "story", title = "1. A Tear in the Sky", points = 1}).head, "CHAPTER COMPLETE", "story announcement")
 end
+-- QC regressions (rules).
+do
+	-- [M2] the arena's corners sit inside the inside range, and both sides use the same range.
+	ok(ST.ARENA_HALF * math.sqrt(2) <= ST.ARENA_RANGE, "[M2] arena corners inside ST.ARENA_RANGE")
+	eq(ST.ARENA_RANGE, Data.Lairs.ARENA_RANGE, "[M2] the story range is combat's inside range")
+	-- [M1 / M3] one shared travel guard.
+	local function fake(attrs, seat)
+		local humanoid = {SeatPart = seat}
+		return {GetAttribute = function(_, k) return attrs[k] end, Character = {FindFirstChildOfClass = function() return humanoid end}}
+	end
+	eq(ST.travelBlock(fake({})), nil, "[M3] free to travel")
+	ok(has(ST.travelBlock(fake({StoryFight = "Gloamwick"})), "encounter"), "[M1] an encounter blocks travel")
+	ok(has(ST.travelBlock(fake({SailVessel = "4:helm"})), "ship"), "[M3] aboard a ship blocks travel")
+	ok(has(ST.travelBlock(fake({}, {})), "Stand up"), "[M3] seated blocks travel")
+	eq(ST.travelBlock(fake({LairBoss = "Bramblemaw"})), nil, "the gate leaves lairs to their own rules")
+	ok(has(ST.travelBlock(fake({LairBoss = "Bramblemaw"}), true), "Finish"), "[M1] busy = true refuses other activities")
+	ok(has(ST.travelBlock(fake({DungeonInRun = true}), true), "Finish"), "[M1] dungeon runs too")
+	-- [L6] a named cutscene waits for calm.
+	local calm = {}
+	ok(ST.cutCalm(calm, 10, 100, true), "[L6] calm at once without damage")
+	ok(not ST.cutCalm(calm, 11, 80, true), "[L6] damage holds it")
+	ok(not ST.cutCalm(calm, 11 + ST.CUT_CALM - 0.5, 80, true), "[L6] still held inside the calm window")
+	ok(ST.cutCalm(calm, 11 + ST.CUT_CALM + 0.1, 80, true), "[L6] plays after the calm window")
+	ok(not ST.cutCalm({}, 50, 0, false), "[L6] never while dead")
+	-- [L13] versioned step remaps.
+	local version = ST.VERSION
+	ST.VERSION = 2
+	ST.REMAPS[1] = {Vault = {[3] = 4}}
+	local m = ST.migrate({v = 1, ch = 2, step = 3, marks = {GlyphStone1 = true}, base = 9})
+	eq(m.step, 4, "[L13] a remap moves an old step")
+	ok(next(m.marks) == nil and m.base == 0, "[L13] a moved step starts clean")
+	eq(ST.migrate({v = 1, ch = 2, step = 2}).step, 2, "[L13] unlisted steps keep their index")
+	eq(ST.migrate({v = 2, ch = 2, step = 3}).step, 3, "[L13] current saves are not remapped")
+	ST.VERSION = version
+	ST.REMAPS[1] = nil
+	eq(ST.migrate({v = 1, ch = 2, step = 3}).step, 3, "[L13] no remap at version 1")
+end
 print("Part A (rules): " .. (checks - partA) .. " checks")
 
 ------------------------------------------------------------------------------
@@ -423,6 +460,12 @@ do
 	local moved = false
 	for _, e in ipairs(events) do if e.kind == "lantern" and e.record == r then moved = true end end
 	ok(moved and r.lit ~= before, "the lantern moves")
+	-- [M2] a member outside the arena cannot strike (the boss leashes back to the centre).
+	w.positions[hero] = center + Vector3.new(ST.ARENA_RANGE + 6, 0, 0)
+	r.position = center + Vector3.new(ST.ARENA_RANGE + 3, 3, 0)
+	w.clock += 1
+	res, why = w.logic.attack(hero, "attack", r.model)
+	ok(res == nil and why == "outside", "[M2] hits from outside the arena are refused (" .. tostring(why) .. ")")
 	-- Kill credit: the member alive with damage.
 	w.logic.kill(r)
 	local result = w.logic.lrResult("story:901:1")
@@ -568,6 +611,8 @@ local scombatFn = {Invoke = function(_, op, payload)
 		local r = CW.logic.stRegister(payload.fight, payload.boss, {Name = payload.boss}, payload.center + Vector3.new(0, 3, 11), {members = payload.members, seed = payload.seed, center = payload.center, ground = payload.center.Y})
 		if not r then return {ok = false} end
 		SCombat.spawned[payload.fight] = r
+		SCombat.seeds = SCombat.seeds or {}
+		table.insert(SCombat.seeds, payload.seed)
 		return {ok = true, hp = r.maxHp}
 	elseif op == "status" then return CW.logic.lrStatus(payload.fight)
 	elseif op == "despawn" then CW.logic.lrDespawn(payload.fight); return {ok = true} end
@@ -753,7 +798,9 @@ do
 end
 -- Lamps: level-scaled, gated skills refused, consumed once.
 do
-	a = rejoin(a, function(pr) pr.xp.Mining = lvl(40) end)
+	local petId
+	for id in pairs(SD.PetById) do petId = petId or id end
+	a = rejoin(a, function(pr) pr.xp.Mining = lvl(40); pr.pets = {{id = petId, level = 1, xp = 0}}; pr.activePet = 1 end)
 	ok(has(verb(a, "storyLamp", "Carpentry"), "cannot train"), "no lamp XP for Carpentry")
 	ok(has(verb(a, "storyLamp", "Gold"), "Choose a skill"), "unknown skill")
 	local before = saved(a) and state(a).xp.Mining
@@ -761,6 +808,7 @@ do
 	local expect = SST.lampXp(SST.Chapters[1].rewards.lamps[1].rate, 40)
 	ok(has(m, "+" .. expect .. " Mining XP"), "lamp scales with level 40: " .. tostring(m))
 	eq(state(a).xp.Mining - before, expect, "XP granted")
+	eq(saved(a) and state(a).depth.pets[1].xp, 0, "[M4] a lamp is flat XP: the summoned pet earns nothing")
 	ok(has(verb(a, "storyLamp", "Mining"), "no story XP lamps"), "a lamp is rubbed once")
 end
 -- The helper pin follows the story.
@@ -841,6 +889,17 @@ do
 	-- Talking to Wick early does nothing.
 	ok(not has(talkTo(a, "StoryWick"), "New objective"), "Wick waits for the beacon")
 	a = rejoin(a, function(pr) pr.items.FlintStriker = 1; pr.items.EmberoakLog = 12 end)
+	do
+		-- [L3] a pyre fired from afar (stale prompt) never credits the step.
+		local pyre = Vector3.new(-300, 0, -300)
+		moveTo(a, pyre + Vector3.new(60, 0, 0))
+		local q = {Enabled = true, MaxActivationDistance = 99, GetAttribute = function(_, key) return ({IsleAction = "beaconLight", IsleItem = "Windpine", IsleRegion = "Windpine"})[key] end,
+			FindFirstAncestorWhichIsA = function() return {Position = pyre, CFrame = CFrame.new(pyre)} end}
+		H.advance(1)
+		renew(a)
+		H.services.ProximityPromptService.PromptTriggered:Fire(q, a)
+		eq(cur(a).kind, "beacon", "[L3] no credit away from the pyre")
+	end
 	local m = use(a, "beaconLight", "Windpine", "Windpine", Vector3.new(-300, 0, -300))
 	ok(has(m, "blazes up"), "the Canopy Beacon is lit: " .. tostring(m))
 	local s = st(a)
@@ -890,10 +949,27 @@ do
 	-- Wandering out of the arena ends it too.
 	enterBoss(a, "Gloamwick", "Gloomhollow")
 	center = SHost.last.center
-	moveTo(a, center + Vector3.new(200, 0, 0))
+	local farAway = center + Vector3.new(200, 0, 0)
+	moveTo(a, farAway)
 	state(a)
 	H.advance(SST.AWAY_SECONDS + 1)
-	ok(has(state(a).message, "left the encounter"), "away from the arena")
+	ok(has(state(a).message, "strayed"), "away from the arena")
+	ok((rootOf(a).Position - farAway).Magnitude < 1, "[M1] an away timeout never teleports you back to the gate")
+	-- [M1] a storyLeave while another activity holds the player never moves them.
+	enterBoss(a, "Gloamwick", "Gloomhollow")
+	local held = SHost.last.center + Vector3.new(0, 0, -10)
+	moveTo(a, held)
+	a:SetAttribute("LairBoss", "Bramblemaw")
+	verb(a, "storyLeave", nil)
+	ok((rootOf(a).Position - held).Magnitude < 1, "[M1] no move while LairBoss is set")
+	a:SetAttribute("LairBoss", "")
+	-- [M3] aboard a ship or seated: the gate refuses.
+	a:SetAttribute("SailVessel", "9:helm")
+	ok(has((enterBoss(a, "Gloamwick", "Gloomhollow")), "aboard a ship"), "[M3] storyBoss refused aboard a ship")
+	a:SetAttribute("SailVessel", "")
+	humanoidOf(a).SeatPart = {}
+	ok(has((enterBoss(a, "Gloamwick", "Gloomhollow")), "Stand up"), "[M3] storyBoss refused while seated")
+	humanoidOf(a).SeatPart = nil
 	-- Disconnect mid-fight: torn down, no reward, rejoin finds the gate.
 	enterBoss(a, "Gloamwick", "Gloomhollow")
 	local f3 = SHost.last.fight
@@ -921,9 +997,11 @@ do
 	H.advance(1)
 	ok(CW.logic.attack(a, "attack", r.model), "a blow from the light lands")
 	CW.logic.kill(r)
+	humanoidOf(a).Health = 0 -- [L1] struck down after the killing blow: the kill is settled first
 	local win = state(a).message
+	humanoidOf(a).Health = 100
 	ok(has(win, "defeated") and has(win, "New objective"), "the win advances the step: " .. tostring(win))
-	ok((rootOf(a).Position - pieceAt("GloamGate")).Magnitude < 10, "returned to the gate")
+	ok(not has(win, "struck down"), "[L1] the win, not a death")
 	eq(cur(a).kind, "talk", "talk to Wick")
 	eq(st(a).fight, nil, "fight cleared")
 	local again = state(a).message
@@ -932,6 +1010,12 @@ do
 	ok(has(done, "Wickglass Lantern"), "chapter 3 rewards: " .. tostring(done))
 	eq(st(a).cut.id, "c3_light", "the light cutscene named at the last step")
 end
+do
+	local seeds, distinct = SCombat.seeds or {}, {}
+	local n = 0
+	for _, sd in ipairs(seeds) do if not distinct[sd] then distinct[sd] = true; n += 1 end end
+	ok(#seeds >= 3 and n == #seeds, "[L7] every fight of the same journal gets its own seed (" .. n .. "/" .. #seeds .. ")")
+end
 -- Chapter 4: a real voyage to Tidewater.
 do
 	a = rejoin(a, function(pr) skills(pr, {Skysailing = 35, Fishing = 35}) end)
@@ -939,6 +1023,14 @@ do
 	eq(cur(a).kind, "sail", "sail step")
 	ok(not has(talkTo(a, "StoryCaptain"), "New objective"), "Orla waits for your ship")
 	a = rejoin(a, function(pr) pr.skysailing = SS.migrate({ship = SS.modelShip(35)}) end)
+	-- [L2] a launch and a dock at the same port is no voyage.
+	local TIDE = SS.PortById.Tidewater
+	local m0 = use(a, "sailLaunch", "Tidewater", "Tidewater", vp(TIDE.landing))
+	ok(has(m0, "helm"), "launched at Tidewater: " .. tostring(m0))
+	tick(a); tick(a)
+	ok(has(verb(a, "sailDock", nil), "Tidewater"), "docked at Tidewater")
+	eq(cur(a).kind, "sail", "[L2] docking where you launched does not finish the sail step")
+	H.advance(SS.LAUNCH_COOLDOWN + 1)
 	local QUAY = SS.PortById.Quay
 	local msg = use(a, "sailLaunch", "Quay", "Hub", vp(QUAY.landing))
 	ok(has(msg, "helm"), "launched from the Quay: " .. tostring(msg))
@@ -987,6 +1079,9 @@ do
 	a = rejoin(a, function(pr) pr.collection.StormFeather = (pr.collection.StormFeather or 0) + 12 end)
 	local s = st(a)
 	eq(s.cur.kind, "puzzle", "astrolabe step")
+	a = rejoin(a, function(pr) pr.story.puzzle = nil end)
+	s = st(a)
+	ok(s.puzzle and s.puzzle.id == "stars", "[L4] a missing puzzle state is recreated")
 	local start = table.clone(s.puzzle.s)
 	ok(not SST.starSolved(start), "starts scrambled")
 	moveTo(a, pieceAt("Astrolabe"))
@@ -1083,6 +1178,7 @@ do
 	ok(CW.logic.attack(a, "attack", r.model), "a blow lands on Caedmon")
 	CW.logic.kill(r)
 	ok(has(state(a).message, "defeated"), "Caedmon falls")
+	ok((rootOf(a).Position - pieceAt("SunderGate")).Magnitude < 10, "[M1] a win from inside the arena returns you to the gate")
 	talkTo(a, "StoryLoomwright")
 	local before = state(a)
 	local qp0 = before.journal.questPoints
@@ -1104,10 +1200,17 @@ do
 	eq(state(a).items.LoomwardenMantle, items, "rewards once")
 	-- Fast travel: gate, cooldown, region access, FastTravelAt.
 	place("Story_Loomheart", Vector3.new(800, 120, -600))
+	moveTo(a, Vector3.new(0, 0, 0))
+	ok(has(verb(a, "storyWarp", "Loomheart"), "Stand at the Loomheart"), "[L8] no anywhere-teleport: only from a dais")
+	moveTo(a, pieceAt("QuayLoom"))
+	a:SetAttribute("SailVessel", "3:sails")
+	ok(has(verb(a, "storyWarp", "Loomheart"), "aboard a ship"), "[M3] storyWarp refused aboard a ship")
+	a:SetAttribute("SailVessel", "")
 	local w = verb(a, "storyWarp", "Loomheart")
 	ok(has(w, "Loomheart Terrace") and (rootOf(a).Position - Vector3.new(800, 124, -600)).Magnitude < 1, "the Loomheart carries you: " .. tostring(w))
 	ok(has(verb(a, "storyWarp", "Quay"), "settling"), "warp cooldown")
 	H.advance(SST.WARP_COOLDOWN + 1)
+	moveTo(a, Vector3.new(800, 120, -600))
 	storage.IsleTravelGate = nil
 	ok(has(verb(a, "storyWarp", "Quay"), "will not open"), "no travel gate: fail closed")
 	storage.IsleTravelGate = gate
@@ -1117,6 +1220,18 @@ do
 	a = rejoin(a)
 	s = st(a)
 	ok(s.done and s.qp == 18 and s.cur == nil, "a finished journal stays finished")
+end
+-- [L12] chapter rows are cached on (chapter, step, XP, quests, contracts) and still follow a change.
+do
+	local g = join(7106)
+	local r1 = st(g).chapters[1]
+	eq(r1.status, "locked", "[L12] locked")
+	eq(st(g).chapters[1].status, "locked", "[L12] the cached row agrees")
+	g = rejoin(g, function(pr) pr.questCompleted = 2 end)
+	eq(st(g).chapters[1].status, "available", "[L12] a contract change rebuilds the rows")
+	g = rejoin(g, function(pr) pr.xp.Mining = X[20]; pr.xp.Runebinding = X[10]; pr.xp.Smithing = X[15] end)
+	local row = st(g).chapters[2]
+	ok(row.reqs[1].met and row.reqs[2].met and row.reqs[3].met, "[L12] an XP change rebuilds the rows")
 end
 -- Migration and tampering at load.
 do
@@ -1253,7 +1368,28 @@ do
 	ok(restores >= 5, "every ending restores (" .. restores .. " calls)")
 	ok(has(client, "if not ok then") and has(client, "CharacterAdded:Connect(function() if S.run then restore() end end)"), "errors and respawns restore too")
 	ok(has(client, "S.baseSeq = seq"), "a rejoin never replays the last cutscene")
+	ok(select(2, client:gsub('make%("UIScale"', "")) >= 3 and has(client, "ViewportSize"), "[L9] UIScale on the panel, strip and title")
+	ok(has(client, "not processed and (io.KeyCode == Enum.KeyCode.Backspace"), "[L10] typing never skips")
+	ok(has(client, "S.pending = cut.id") and has(client, "ST.cutCalm("), "[L6] a named cutscene waits for calm")
+	ok(has(client, "Cut.graceUntil"), "[L5] grace for the return-to-gate move")
+	local server = fs.readFile("server.server.lua")
+	local winAt = server:find('finish(player,p,"win")', 1, true)
+	local advAt = winAt and server:find("advance(player,p)", winAt, true)
+	ok(winAt and advAt and advAt - winAt < 200, "[L5] back at the gate before the step advances")
+	ok(has(server, 'grantXp(p,skill,xp,"lectern")'), "[M4] lamps use the flat lectern source")
+	ok(has(server, "for id,ready in pairs(Story.warpAt) do if ready<=now then Story.warpAt[id]=nil end end"), "[L10] warp cooldowns pruned")
+	ok(has(server, '{"MinigameGame","LairBoss","RaidRun","RaidLobby",Data.Story.FIGHT_FLAG}'), "[M1] feat busy() knows story encounters")
+	local _, lairBusy = server:gsub("local story=player:GetAttribute%(Data.Story.FIGHT_FLAG%)", "")
+	eq(lairBusy, 2, "[M1] both lair / raid journal busy() checks know story encounters")
+	ok(has(server, "if from==port then return end"), "[L2] dock credit needs another port")
+	ok(has(fs.readFile("raids.server.lua"), 'player:GetAttribute("StoryFight")'), "[M1] raids busyElsewhere")
+	local npcSrc = fs.readFile("npc.server.lua")
+	local _, guards = npcSrc:gsub("Data.Story.travelBlock%(player%)", "")
+	eq(guards, 2, "[M1 / M3] IsleTravelGate and the recall charm share the travel guard")
+	ok(has(fs.readFile("story.server.lua"), "islands.ChildAdded:Connect"), "[L11] late islands get their pieces")
+	ok(has(fs.readFile("story.server.lua"), "local ARENA_HALF = ST.ARENA_HALF"), "[M2] the arena uses ST.ARENA_HALF")
 	local ui = fs.readFile("ui.client.lua")
+	ok(has(ui, '"Confirm · "..skill'), "[L10] lamp rub confirm step")
 	ok(has(ui, '"Story"') and has(ui, "function Pages.drawStory()") and has(ui, "storyLamp=true") and has(ui, "UI.checklist(body,nextOrder,\"REQUIREMENTS\""), "Journal › Story with ✓/✗ requirements")
 	local anim = fs.readFile("animate.client.lua")
 	for _, v in ipairs({"storyInspect", "storyPuzzle", "storyBoss", "storyLeave", "storyWarp"}) do ok(has(anim, v .. " = "), v .. " has a gesture") end

@@ -18924,6 +18924,35 @@ ST.WARP_COOLDOWN = 20
 ST.CUTSCENE_MAX = 40         -- s: hard cap of any cutscene (watchdog)
 ST.CUTSCENE_GRACE = 2
 ST.FIGHT_FLAG = "StoryFight" -- player attribute while inside an encounter
+ST.ARENA_HALF = 28           -- QC M2: arena half-width; its corners (39.6) stay inside ST.ARENA_RANGE
+assert(ST.ARENA_HALF * math.sqrt(2) <= ST.ARENA_RANGE, "story arena corners inside the range")
+ST.LOOM_RANGE = 14           -- QC L8: the Loomheart only carries you from a Loomheart / Loomstone dais
+ST.CUT_CALM = 3              -- QC L6: a pending cutscene waits for this many seconds without damage
+ST.CUT_TELEPORT_GRACE = 1    -- QC L5: the first second of a cutscene ignores the return-to-gate move
+ST.LAMP_CONFIRM = 5          -- QC L10: a second tap on Rub within this many seconds confirms
+-- QC M1 / M3 (one shared helper): fast travel and server teleports are refused
+-- inside a story encounter, aboard a ship (SailVessel) or while seated.
+-- busy = true also refuses the other instanced activities (lairs, raids,
+-- minigames, dungeon runs). Returns the refusal text, or nil.
+ST.BUSY_KEYS = {"MinigameGame", "LairBoss", "RaidRun", "RaidLobby"}
+function ST.travelBlock(player, busy)
+	if type(player) ~= "table" and typeof(player) ~= "Instance" then return nil end
+	local fight = player:GetAttribute(ST.FIGHT_FLAG)
+	if type(fight) == "string" and fight ~= "" then return "You are inside an encounter. Leave it first." end
+	local vessel = player:GetAttribute("SailVessel")
+	if type(vessel) == "string" and vessel ~= "" then return "You are aboard a ship. Dock or step ashore first." end
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if humanoid and humanoid.SeatPart ~= nil then return "Stand up first." end
+	if busy then
+		for _, key in ipairs(ST.BUSY_KEYS) do
+			local v = player:GetAttribute(key)
+			if type(v) == "string" and v ~= "" then return "Finish your lair, raid, minigame or dungeon run first." end
+		end
+		if player:GetAttribute("DungeonInRun") == true then return "Finish your lair, raid, minigame or dungeon run first." end
+	end
+	return nil
+end
 
 ------------------------------------------------------------------------------
 -- The cast (regional folk on anchors; distinct voices).
@@ -19381,6 +19410,15 @@ function ST.cutStep(run, now, ev)
 end
 
 ------------------------------------------------------------------------------
+-- QC L6: a named cutscene waits for calm: alive and no damage for ST.CUT_CALM s.
+-- calm = {hurtAt, health} (client state); returns true when it may start.
+function ST.cutCalm(calm, now, health, alive)
+	if calm.health and health < calm.health - 0.5 then calm.hurtAt = now end
+	calm.health = health
+	return alive == true and now - (calm.hurtAt or -math.huge) >= ST.CUT_CALM
+end
+
+------------------------------------------------------------------------------
 -- Chapters.
 ------------------------------------------------------------------------------
 local function talk(npc, text, ask, lines, reply) return {kind = "talk", npc = npc, text = text, ask = ask, lines = lines, reply = reply} end
@@ -19521,8 +19559,27 @@ ST.Warps = {
 --    start), marks {[piece]=true}, puzzle {id, s}, lamps {{rate}}, cut {id, seq},
 --    seq, lockUntil, tries}
 ------------------------------------------------------------------------------
+-- QC L13: versioned step remaps for future content changes. When a chapter's
+-- steps are inserted, removed or reordered, bump ST.VERSION and add
+-- ST.REMAPS[<old version>] = {[<chapter id>] = {[<old step>] = <new step>}};
+-- ST.migrate applies every remap from the save's version up (a step not
+-- listed keeps its index; the counting base / marks / puzzle of a moved step
+-- are reset by the migration). Empty today (version 1 is the first).
+ST.REMAPS = {}
+function ST.remap(src)
+	local v = whole(src.v)
+	if v <= 0 or v >= ST.VERSION then return src end
+	local ch = ST.Chapters[whole(src.ch)]
+	for ver = v, ST.VERSION - 1 do
+		local map = ST.REMAPS[ver] and ch and ST.REMAPS[ver][ch.id]
+		local to = map and map[whole(src.step)]
+		if to then src.step, src.base, src.marks, src.puzzle = to, 0, {}, nil end
+	end
+	return src
+end
 function ST.migrate(raw)
 	local src = tab(raw)
+	if type(raw) == "table" then src = ST.remap(table.clone(raw)) end
 	local n = #ST.Chapters
 	local out = {v = ST.VERSION, ch = math.clamp(whole(src.ch), 1, n + 1), step = 1, base = 0, marks = {}, lamps = {}, seq = math.max(0, whole(src.seq)), tries = math.max(0, whole(src.tries))}
 	if src.ch == nil then out.ch = 1 end

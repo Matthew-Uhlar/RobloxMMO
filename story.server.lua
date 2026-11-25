@@ -186,7 +186,7 @@ end
 ------------------------------------------------------------------------------
 -- Arenas.
 ------------------------------------------------------------------------------
-local ARENA_HALF = 36
+local ARENA_HALF = ST.ARENA_HALF -- QC M2: corners inside ST.ARENA_RANGE (the combat inside range)
 function Host.slotCenter(slot)
 	local o = ST.ARENA_ORIGIN
 	return V(o.x + (slot - 1) * ST.ARENA_SPACING, o.y, o.z)
@@ -274,6 +274,8 @@ end
 task.spawn(function()
 	local islands = workspace:WaitForChild("Islands", 120)
 	if not islands then warn("[Story] no Workspace.Islands: set pieces skipped") return end
+	-- QC L11: an island that arrives late (or is rebuilt) gets its pieces too.
+	islands.ChildAdded:Connect(function() task.delay(1, function() pcall(Host.placePieces, islands, Host.raycast) end) end)
 	-- Islands arrive while world.server.lua builds; place what exists, retry the rest.
 	for _ = 1, 30 do
 		Host.placePieces(islands, Host.raycast)

@@ -507,6 +507,8 @@ recall.OnInvoke = function(player, target)
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	if not root or not humanoid or humanoid.Health <= 0 then return "Return to your island first." end
 	if inExpedition(root) then return "The Observatory holds you. Finish or leave the expedition first." end
+	local block = Data.Story and Data.Story.travelBlock(player) -- §53 QC M1 / M3: encounters, ships, seats
+	if block then return block end
 	local destination = if target == "Hub" then hubDestination() else homeDestination(player)
 	if not destination then return "That isle isn't charted yet. Try a beacon instead." end
 	lastRecall[player] = now
@@ -531,6 +533,8 @@ travelGate.OnInvoke = function(player)
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	if not root or not humanoid or humanoid.Health <= 0 then return "Return to your island first." end
 	if inExpedition(root) then return "The Observatory holds you. Finish or leave the expedition first." end
+	local block = Data.Story and Data.Story.travelBlock(player) -- §53 QC M1 / M3: encounters, ships, seats (feat teleports, warps, trails)
+	if block then return block end
 	return true
 end
 travelGate.Parent = ServerStorage

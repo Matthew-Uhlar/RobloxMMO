@@ -6182,8 +6182,9 @@ do
 		local lair=player:GetAttribute("LairBoss")
 		local raid=player:GetAttribute("RaidRun") -- Raids (§38): a raid run or party lobby keeps a raider busy
 		local lobby=player:GetAttribute("RaidLobby")
+		local story=player:GetAttribute(Data.Story.FIGHT_FLAG) -- §53 QC M1
 		return player:GetAttribute("DungeonInRun")==true or (type(game)=="string" and game~="") or (type(lair)=="string" and lair~="")
-			or (type(raid)=="string" and raid~="") or (type(lobby)=="string" and lobby~="")
+			or (type(raid)=="string" and raid~="") or (type(lobby)=="string" and lobby~="") or (type(story)=="string" and story~="")
 	end
 	function Lairs.action(player,p,verb,item,prompt)
 		if verb=="lairLeave" then
@@ -6395,7 +6396,8 @@ do
 	local function busy(player)
 		local game=player:GetAttribute("MinigameGame")
 		local lair=player:GetAttribute("LairBoss")
-		return player:GetAttribute("DungeonInRun")==true or (type(game)=="string" and game~="") or (type(lair)=="string" and lair~="")
+		local story=player:GetAttribute(Data.Story.FIGHT_FLAG) -- §53 QC M1: a story encounter keeps a player busy
+		return player:GetAttribute("DungeonInRun")==true or (type(game)=="string" and game~="") or (type(lair)=="string" and lair~="") or (type(story)=="string" and story~="")
 	end
 	local function publishTitle(player,p)
 		local t=RD.TitleById[Raids.of(p).title]
@@ -11031,7 +11033,7 @@ do
 		return res
 	end
 	local function busy(player)
-		for _,key in ipairs({"MinigameGame","LairBoss","RaidRun","RaidLobby"}) do
+		for _,key in ipairs({"MinigameGame","LairBoss","RaidRun","RaidLobby",Data.Story.FIGHT_FLAG}) do -- §53 QC M1: story encounters too
 			local v=player:GetAttribute(key)
 			if type(v)=="string" and v~="" then return true end
 		end
@@ -12686,7 +12688,7 @@ do
 		if not b then return "Sail within "..SS.DOCK_RANGE.." studs of a skydock you may enter (or your home berth) to dock." end
 		if v.speed>SS.SLOW*2 then return "Slow down to dock." end
 		local extra=deliver(player,p,v,b)
-		if b.kind=="port" and Story.onDock then Story.onDock(player,p,b.port.id) end -- §53: a story "sail" step
+		if b.kind=="port" and Story.onDock then Story.onDock(player,p,b.port.id,v.from) end -- §53: a story "sail" step (QC L2: from another port)
 		despawn(v,nil,b)
 		return "You dock "..(if b.kind=="port" then "at the "..b.port.name else "at your Shipwright's Slip").." and step ashore."..extra
 	end
@@ -13390,24 +13392,41 @@ do
 		call("IsleStoryHost","close",{fight=f.fight})
 		pcall(function() player:SetAttribute(ST.FIGHT_FLAG,"") end)
 	end
+	local function inside(player,f)
+		local root=rootOf(player)
+		return root~=nil and Vector3.new(root.Position.X-f.center.X,0,root.Position.Z-f.center.Z).Magnitude<=ST.ARENA_RANGE
+	end
+	-- QC M1: never a move while another instanced activity holds the player.
+	local function heldElsewhere(player)
+		for _,key in ipairs(ST.BUSY_KEYS) do
+			local v=player:GetAttribute(key)
+			if type(v)=="string" and v~="" then return true end
+		end
+		return player:GetAttribute("DungeonInRun")==true
+	end
+	Story.heldElsewhere=heldElsewhere
 	local function returnToGate(player,f)
 		local gate=gateOf(f.boss)
 		local a=gate and Trails.anchor("Story_"..gate.id)
 		local character=player.Character
 		local root=rootOf(player)
-		if not a or not root or not alive(player) then return end
+		if not a or not root or not alive(player) or heldElsewhere(player) then return false end
 		player:SetAttribute("FastTravelAt",os.clock()) -- server-driven movement (Aether Mote pickup checks)
 		pcall(function() character:PivotTo(CFrame.new(a.CFrame.Position+Vector3.new(0,4,0))) end)
+		return true
 	end
 	local ENDINGS={died="You were struck down. The gate will open again whenever you are ready.",
 		left="You left the encounter. The gate will open again whenever you are ready.",
+		away="You strayed from the encounter and it collapsed. The gate will open again whenever you are ready.",
 		timeout="The encounter collapsed: time ran out. Try again at the gate.",
 		error="The encounter could not hold. Try again at the gate."}
 	local function finish(player,p,result)
 		local f=Story.fights[player]
 		if not f then return nil end
+		-- QC M1: back to the gate only from inside the arena or by storyLeave; never after an away timeout or a death.
+		local back=result=="left" or (result~="died" and result~="away" and inside(player,f))
 		teardown(player,f)
-		if result~="died" then returnToGate(player,f) end
+		if back then returnToGate(player,f) end
 		return ENDINGS[result]
 	end
 	-- Did the boss fall to this member? Advances the boss step once.
@@ -13420,38 +13439,46 @@ do
 			local s=journal(p)
 			local _,step=ST.current(s)
 			if s.ch==f.ch and s.step==f.step and step and step.kind=="boss" and step.boss==f.boss then
-				return true,status,advance(player,p)
+				return true,status
 			end
 		end
 		return false,status
 	end
 	-- One fight step for one member; returns a message when something happened.
+	-- QC L5: the member is returned to the gate before the step advances (and
+	-- its cutscene is named), so the client never sees the move mid-cutscene.
+	local function win(player,p,f)
+		finish(player,p,"win")
+		return ST.Bosses[f.boss].name.." is defeated!   ·   "..(advance(player,p) or "")
+	end
 	function Story.tick(player,p)
 		local f=Story.fights[player]
 		if not f then return nil end
 		local now=os.clock()
+		-- QC L1: a kill that already happened is settled before the death / away checks.
+		if f.state=="live" then
+			local won,status=checkWin(player,p,f)
+			if won then return win(player,p,f) end
+			f.status=status
+		end
 		if not alive(player) then return finish(player,p,"died") end
 		local root=rootOf(player)
 		local away=not root or Vector3.new(root.Position.X-f.center.X,0,root.Position.Z-f.center.Z).Magnitude>ST.ARENA_RANGE
 		if away then
 			f.awayAt=f.awayAt or now
-			if now-f.awayAt>=ST.AWAY_SECONDS then return finish(player,p,"left") end
+			if now-f.awayAt>=ST.AWAY_SECONDS then return finish(player,p,"away") end
 		else
 			f.awayAt=nil
 		end
 		if f.state=="warmup" then
 			if now<f.riseAt then return nil end
 			local r=call("IsleStoryCombat","spawn",{fight=f.fight,boss=f.boss,center=f.center,members={player.UserId},party=1,
-				seed=ST.seedOf(player.UserId)+journal(p).seq,lanterns=f.lanterns})
+				seed=f.seed,lanterns=f.lanterns})
 			if type(r)~="table" or not r.ok then return finish(player,p,"error") end
 			f.state="live"
 			return ST.Bosses[f.boss].short.." rises!"
 		end
-		local won,status,msg=checkWin(player,p,f)
-		if won then
-			finish(player,p,"win")
-			return ST.Bosses[f.boss].name.." is defeated!   ·   "..(msg or "")
-		end
+		local status=f.status
 		if type(status)=="table" and status.alive==false then return finish(player,p,if status.result=="timeout" then "timeout" else "error") end
 		if status==nil then return finish(player,p,"error") end
 		return nil
@@ -13461,12 +13488,19 @@ do
 		local f=Story.fights[player]
 		if not f then return end
 		local p=profiles[player]
-		if p and f.state=="live" then pcall(checkWin,player,p,f) end
+		if p and f.state=="live" then
+			local okW,won=pcall(checkWin,player,p,f)
+			if okW and won then teardown(player,f); advance(player,p) return end
+		end
 		teardown(player,f)
 	end
 	function Story.forget(player)
 		local f=Story.fights[player]
 		if f then teardown(player,f) end
+		Story.cache[player]=nil
+		-- QC L10: expired warp cooldowns go; an unexpired one outlives a quick rejoin.
+		local now=os.clock()
+		for id,ready in pairs(Story.warpAt) do if ready<=now then Story.warpAt[id]=nil end end
 	end
 	function Story.drain()
 		local list={}
@@ -13507,11 +13541,19 @@ do
 		function Beaconry.beacon(player,p,item,prompt)
 			local result=beacon(player,p,item,prompt)
 			local state=type(item)=="string" and Beaconry.beacons[item]
-			if prompt and state and state.untilAt and state.untilAt>os.time() then pcall(Story.mark,player,p,"beacon",item) end
+			-- QC L3: credit only while standing at the pyre.
+			local base=prompt and prompt:FindFirstAncestorWhichIsA("BasePart")
+			local root=rootOf(player)
+			local near=base and root and (root.Position-base.CFrame.Position).Magnitude<=Data.Beaconry.BEACON_RANGE
+			if near and state and state.untilAt and state.untilAt>os.time() then pcall(Story.mark,player,p,"beacon",item) end
 			return result
 		end
 	end
-	function Story.onDock(player,p,port) pcall(Story.mark,player,p,"sail",port) end
+	-- QC L2: the voyage must start at another port (or the home slip).
+	function Story.onDock(player,p,port,from)
+		if from==port then return end
+		pcall(Story.mark,player,p,"sail",port)
+	end
 	local questPoints=Journal.questPoints
 	function Journal.questPoints(p) return questPoints(p)+ST.points(p.story) end
 
@@ -13542,17 +13584,36 @@ do
 		if msg then note(p,msg) end
 		if ST.done(journal(p)) and p.helperPin=="story" then p.helperPin=nil end
 	end
+	-- QC L12: the chapter rows depend only on (chapter, step) and what the
+	-- requirements read (XP, quests, contracts); cached on that key.
+	Story.cache={} -- [player]; cleared in Story.forget (no weak Instance-keyed tables)
+	function Story.rev(p,s)
+		local xp=0
+		for _,v in pairs(p.xp) do xp+=tonumber(v) or 0 end
+		local q=0
+		for _ in pairs(p.questsDone or {}) do q+=1 end
+		return s.ch..":"..s.step..":"..xp..":"..q..":"..(p.questCompleted or 0)
+	end
 	function Story.state(player,p)
 		local s=journal(p)
-		local chapters={}
-		for i,ch in ipairs(ST.Chapters) do
-			local list,all=reqs(p,ch)
-			local status=if i<s.ch then "done" elseif i==s.ch then (if s.step>1 then "active" elseif all then "available" else "locked") else "locked"
-			chapters[i]={id=ch.id,status=status,reqs=list}
+		local key=Story.rev(p,s)
+		local cached=Story.cache[player]
+		local chapters
+		if cached and cached.key==key and cached.p==p then chapters=cached.rows
+		else
+			chapters={}
+			for i,ch in ipairs(ST.Chapters) do
+				local list,all=reqs(p,ch)
+				local status=if i<s.ch then "done" elseif i==s.ch then (if s.step>1 then "active" elseif all then "available" else "locked") else "locked"
+				chapters[i]={id=ch.id,status=status,reqs=list}
+			end
+			Story.cache[player]={key=key,p=p,rows=chapters,builds=((cached and cached.builds) or 0)+1}
 		end
 		local lamps={}
 		for i,l in ipairs(s.lamps) do lamps[i]={rate=l.rate} end
 		local puzzle
+		local _,stepNow=ST.current(s)
+		if stepNow and stepNow.kind=="puzzle" and (not s.puzzle or s.puzzle.id~=stepNow.puzzle) then s.puzzle=ST.puzzleStart(stepNow.puzzle,ST.seedOf(player.UserId)) end -- QC L4
 		if s.puzzle then
 			puzzle={id=s.puzzle.id,s=table.clone(s.puzzle.s)}
 			if s.puzzle.id=="runelock" then
@@ -13586,7 +13647,9 @@ do
 		if ST.LAMP_EXCLUDE[skill] then return "A story lamp cannot train "..skill..": earn it through its own activity." end
 		local lamp=table.remove(s.lamps,1)
 		local xp=ST.lampXp(lamp.rate,level(p.xp[skill]))
-		grantXp(p,skill,xp)
+		local before=p.xp[skill] or 0
+		grantXp(p,skill,xp,"lectern") -- QC M4: flat XP (no pet / council multipliers, no pet XP or rolls)
+		xp=math.max(0,(p.xp[skill] or 0)-before)
 		return "The lamp flares   ·   +"..xp.." "..skill.." XP"..(if #s.lamps>0 then "   ·   "..#s.lamps.." lamp"..(if #s.lamps==1 then "" else "s").." left" else "")
 	end
 	local function puzzleMove(player,p,item)
@@ -13594,7 +13657,9 @@ do
 		local _,step=ST.current(s)
 		local mv=ST.parseMove(item)
 		if not mv then return "That is not a move this puzzle allows." end
-		if not step or step.kind~="puzzle" or step.puzzle~=mv.id or not s.puzzle or s.puzzle.id~=mv.id then return "That puzzle is not part of your story right now." end
+		if not step or step.kind~="puzzle" or step.puzzle~=mv.id then return "That puzzle is not part of your story right now." end
+		-- QC L4: a puzzle step whose state went missing starts afresh.
+		if not s.puzzle or s.puzzle.id~=mv.id then s.puzzle=ST.puzzleStart(mv.id,ST.seedOf(player.UserId)) end
 		local def=ST.Puzzles[mv.id]
 		if not nearAnchor(player,"Story_"..def.piece,ST.PUZZLE_RANGE) then return "Stand at the "..def.name.." to work it." end
 		local seed=ST.seedOf(player.UserId)
@@ -13642,11 +13707,16 @@ do
 		if not step or step.kind~="boss" or step.boss~=item then return "The gate is sealed. Your story has not led you here yet." end
 		if Story.fights[player] then return "You are already inside an encounter." end
 		if busy(player) then return "Finish your lair, raid, minigame or dungeon run first." end
+		local block=ST.travelBlock(player) -- QC M3: not aboard a ship nor seated
+		if block then return block end
 		local r=call("IsleStoryHost","open",{uid=player.UserId,boss=item})
 		if type(r)~="table" or not r.ok or typeof(r.spawn)~="CFrame" then return "Every encounter hall is in use. Try again in a moment." end
 		local character=player.Character
 		if not character then call("IsleStoryHost","close",{fight=r.fight}) return "Return to your island first." end
-		Story.fights[player]={fight=r.fight,boss=item,ch=s.ch,step=s.step,state="warmup",riseAt=os.clock()+ST.WARMUP,center=r.center,lanterns=r.lanterns}
+		-- QC L7: the fight seed mixes the journal, a server counter and the clock.
+		Story.fightSeq=(Story.fightSeq or 0)+1
+		local seed=(ST.seedOf(player.UserId)+s.seq*7919+Story.fightSeq*104729+math.floor(os.clock()*1000))%2147483647
+		Story.fights[player]={fight=r.fight,boss=item,ch=s.ch,step=s.step,state="warmup",riseAt=os.clock()+ST.WARMUP,center=r.center,lanterns=r.lanterns,seed=seed}
 		player:SetAttribute(ST.FIGHT_FLAG,item)
 		player:SetAttribute("FastTravelAt",os.clock()) -- server-driven movement (Aether Mote pickup checks)
 		pcall(function() character:PivotTo(r.spawn) end)
@@ -13659,6 +13729,12 @@ do
 		if not ST.done(s) then return "The Loomheart opens to those who finish The Sundered Sky." end
 		if not regionAllowed(p,w.region) then return regionDenied(w.region) end
 		if busy(player) then return "Finish your encounter, lair, raid, minigame or dungeon run first." end
+		local block=ST.travelBlock(player) -- QC M3
+		if block then return block end
+		-- QC L8 (lead decision): only from a Loomheart / Loomstone dais.
+		if not (nearAnchor(player,ST.Warps.Loomheart.anchor,ST.LOOM_RANGE) or nearAnchor(player,ST.Warps.Quay.anchor,ST.LOOM_RANGE)) then
+			return "Stand at the Loomheart or the Loomstone to travel the thread."
+		end
 		local now=os.clock()
 		local ready=Story.warpAt[player.UserId]
 		if ready and now<ready then return "The thread is still settling ("..math.ceil(ready-now).."s)." end

@@ -10645,7 +10645,7 @@ end
 -- puzzle panel are local (IsleStoryLocal, story.client.lua).
 ------------------------------------------------------------------------------
 do
-local SP={lampSkill=1}
+local SP={lampSkill=1,confirmAt=0,confirmSkill=nil}
 Pages.SP=SP
 function SP.local_()
 	local existing=ReplicatedStorage:FindFirstChild("IsleStoryLocal")
@@ -10680,9 +10680,9 @@ function Pages.drawStory()
 	end
 	if s.done then
 		card({name="StoryDone",motif="Map",title="The sky is whole",subtitle="Loomheart Terrace is open to you",accent=rgb("D8B4FF"),
-			detail="Every chapter of The Sundered Sky is complete. The Loomheart carries you between the Shattered Crown and the Loomstone on Compass Quay.",
-			actions={{caption="To Loomheart",name="StoryWarpLoomheart",primary=true,fn=function() send("storyWarp","Loomheart") end},
-				{caption="To the Quay",name="StoryWarpQuay",fn=function() send("storyWarp","Quay") end}}})
+			detail="Every chapter of The Sundered Sky is complete. Stand at the Loomstone on Compass Quay or the Loomheart on the Shattered Crown to travel the thread between them.",
+			actions={{caption="Loomstone",name="StoryWayLoomstone",primary=true,fn=function() SP.waypoint({"anchor:Story_QuayLoom","region:Hub"},"The Loomstone") end},
+				{caption="Loomheart",name="StoryWayLoomheart",fn=function() SP.waypoint({"anchor:Story_Loomheart","region:ShatteredCrown"},"Loomheart Terrace") end}}})
 	elseif cur.ch then
 		local ch=ST.Chapters[cur.ch]
 		local step=ch and ch.steps[num(cur.step,1)]
@@ -10719,7 +10719,11 @@ function Pages.drawStory()
 		card({name="StoryLamps",motif="Hero",title=#lamps.." XP lamp"..(#lamps==1 and "" or "s"),subtitle="Next lamp on "..skill..": +"..fmt(ST.lampXp(num(tbl(lamps[1]).rate,1),lvl)).." XP (scales with level)",
 			accent=rgb("FFD166"),
 			actions={{caption="◂",name="StoryLampPrev",fn=function() SP.lampSkill=(SP.lampSkill-2)%#skills+1 render() end},
-				{caption="Rub · "..skill,name="StoryLampRub",primary=true,fn=function() send("storyLamp",skill) end},
+				{caption=(SP.confirmSkill==skill and os.clock()<SP.confirmAt) and ("Confirm · "..skill) or ("Rub · "..skill),name="StoryLampRub",primary=true,fn=function()
+					-- QC L10: a confirming second tap (lamps are permanent choices).
+					if SP.confirmSkill==skill and os.clock()<SP.confirmAt then SP.confirmSkill=nil send("storyLamp",skill)
+					else SP.confirmSkill,SP.confirmAt=skill,os.clock()+((Data.Story and Data.Story.LAMP_CONFIRM) or 5) render() end
+				end},
 				{caption="▸",name="StoryLampNext",fn=function() SP.lampSkill=SP.lampSkill%#skills+1 render() end}}})
 	end
 	-- Chapters.

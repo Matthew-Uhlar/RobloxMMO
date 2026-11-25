@@ -41,7 +41,15 @@ local function tbl(v) return if type(v) == "table" then v else {} end
 local function send(verb, item) actions:Fire(verb, item) end
 local function reduced() return T.reducedMotion and T.reducedMotion(player) or false end
 
-local S = {story = nil, baseSeq = nil, run = nil, puzzleOpen = nil}
+local S = {story = nil, baseSeq = nil, run = nil, puzzleOpen = nil, pending = nil}
+-- QC L9: panels scale down on small viewports (phones).
+local scales = {}
+local function scaleFor(size) return math.clamp(math.min(size.X / 900, size.Y / 560), 0.6, 1) end
+local function rescale()
+	local camera = workspace.CurrentCamera
+	local s = scaleFor(camera and camera.ViewportSize or Vector2.new(1280, 720))
+	for _, u in ipairs(scales) do u.Scale = s end
+end
 
 local gui = make("ScreenGui", player:WaitForChild("PlayerGui"), {Name = "IsleStory", ResetOnSpawn = false, DisplayOrder = 11,
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling, IgnoreGuiInset = true})
@@ -63,6 +71,7 @@ local title = T.label(gui, {Name = "CutsceneTitle", Visible = false, AnchorPoint
 	Size = UDim2.fromOffset(600, 34), Text = "", Font = T.font.display, TextSize = 22, TextColor3 = T.color.gold, TextStrokeTransparency = 0.4})
 
 local Cut = {skipRequested = false, gestures = {}}
+table.insert(scales, make("UIScale", title, {}))
 local function anchorPart(name)
 	if type(name) ~= "string" then return nil end
 	local islands = workspace:FindFirstChild("Islands")
@@ -148,6 +157,7 @@ function Cut.play(id)
 	local _, humanoid, root = characterParts()
 	Cut.lastHealth = humanoid and humanoid.Health or 0
 	Cut.lastPos = root and root.Position
+	Cut.graceUntil = os.clock() + ST.CUT_TELEPORT_GRACE -- QC L5: the return-to-gate move is not a teleport
 	local camera = workspace.CurrentCamera
 	if camera then camera.CameraType = Enum.CameraType.Scriptable end
 	title.Text = string.upper(ST.Cutscenes[id].title)
@@ -157,7 +167,8 @@ end
 skip.Activated:Connect(function() Cut.skipRequested = true end)
 Input.InputBegan:Connect(function(io, processed)
 	if not S.run then return end
-	if io.KeyCode == Enum.KeyCode.Backspace or io.KeyCode == Enum.KeyCode.ButtonB or (not processed and io.KeyCode == Enum.KeyCode.Space) then Cut.skipRequested = true end
+	-- QC L10: Backspace / Space while typing (processed) never skip; the gamepad B button always does.
+	if io.KeyCode == Enum.KeyCode.ButtonB or (not processed and (io.KeyCode == Enum.KeyCode.Backspace or io.KeyCode == Enum.KeyCode.Space)) then Cut.skipRequested = true end
 end)
 RunService.RenderStepped:Connect(function()
 	local run = S.run
@@ -167,7 +178,7 @@ RunService.RenderStepped:Connect(function()
 		local pos = root and root.Position
 		local ev = {skip = Cut.skipRequested, missing = humanoid == nil or root == nil, dead = humanoid ~= nil and humanoid.Health <= 0,
 			hurt = humanoid ~= nil and humanoid.Health < (Cut.lastHealth or 0) - 0.5,
-			teleported = pos ~= nil and Cut.lastPos ~= nil and (pos - Cut.lastPos).Magnitude > 40}
+			teleported = os.clock() > (Cut.graceUntil or 0) and pos ~= nil and Cut.lastPos ~= nil and (pos - Cut.lastPos).Magnitude > 40}
 		Cut.lastHealth = humanoid and humanoid.Health or 0
 		Cut.lastPos = pos
 		local _, ended = ST.cutStep(run, os.clock(), ev)
@@ -180,6 +191,19 @@ RunService.RenderStepped:Connect(function()
 	end
 end)
 player.CharacterAdded:Connect(function() if S.run then restore() end end)
+-- QC L6: a cutscene the server named waits until the player has taken no damage
+-- for ST.CUT_CALM seconds (and is alive), so it never starts mid-fight.
+Cut.calm = {}
+RunService.Heartbeat:Connect(function()
+	if not S.pending or S.run then return end
+	local _, humanoid = characterParts()
+	local now = os.clock()
+	if ST.cutCalm(Cut.calm, now, humanoid and humanoid.Health or 0, humanoid ~= nil and humanoid.Health > 0) then
+		local id = S.pending
+		S.pending = nil
+		Cut.play(id)
+	end
+end)
 
 ------------------------------------------------------------------------------
 -- Puzzle panel.
@@ -194,6 +218,7 @@ local pHint = T.label(panel, {Name = "Hint", Position = UDim2.fromOffset(14, 34)
 local close = T.button(panel, "✕", {name = "Close", position = UDim2.new(1, -46, 0, 6), size = UDim2.fromOffset(38, 34)})
 local body = make("Frame", panel, {Name = "Body", BackgroundTransparency = 1, Position = UDim2.fromOffset(14, 74), Size = UDim2.new(1, -28, 1, -88)})
 close.Activated:Connect(function() S.puzzleOpen = nil; panel.Visible = false end)
+table.insert(scales, make("UIScale", panel, {}))
 local function clear() for _, c in ipairs(body:GetChildren()) do c:Destroy() end end
 local function btn(parent, caption, pos, size, fn, tone)
 	local b = T.button(parent, caption, {position = pos, size = size, tone = tone})
@@ -322,6 +347,9 @@ make("UIStroke", strip, {Color = Color3.fromHex("B48CFF"), Thickness = 1.5})
 local stripText = T.label(strip, {Name = "Text", Position = UDim2.fromOffset(12, 0), Size = UDim2.new(1, -120, 1, 0), Text = "", TextWrapped = true, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left})
 local leave = T.button(strip, "Leave", {name = "LeaveButton", position = UDim2.new(1, -100, 0.5, -17), size = UDim2.fromOffset(90, 34), tone = "danger"})
 leave.Activated:Connect(function() send("storyLeave", nil) end)
+table.insert(scales, make("UIScale", strip, {}))
+rescale()
+if workspace.CurrentCamera then workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(rescale) end
 local function drawStrip()
 	local f = tbl(S.story).fight
 	if type(f) ~= "table" then strip.Visible = false return end
@@ -344,7 +372,7 @@ local function onSnapshot(snap)
 		S.baseSeq = seq -- a rejoin never replays the last cutscene
 	elseif seq > S.baseSeq then
 		S.baseSeq = seq
-		if type(cut.id) == "string" then Cut.play(cut.id) end
+		if type(cut.id) == "string" then S.pending = cut.id end -- QC L6: played once calm (Cut.pump)
 	end
 	drawStrip()
 	if S.puzzleOpen then drawPuzzle() end
