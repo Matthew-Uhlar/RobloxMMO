@@ -10637,12 +10637,129 @@ end
 end
 
 ------------------------------------------------------------------------------
+-- Journal › Story (§53): The Sundered Sky. Chapter list with ✓/✗ requirement
+-- checks, the current step with its helper waypoint and pin, the puzzle panel,
+-- encounter Leave, XP lamps (choose a skill; level-scaled), cutscene replays and
+-- the Loomheart fast travel. Verbs storyLamp / storyWarp / storyLeave /
+-- storyPuzzle and helperPin "story" go through the relay; replays and the
+-- puzzle panel are local (IsleStoryLocal, story.client.lua).
+------------------------------------------------------------------------------
+do
+local SP={lampSkill=1,confirmAt=0,confirmSkill=nil}
+Pages.SP=SP
+function SP.local_()
+	local existing=ReplicatedStorage:FindFirstChild("IsleStoryLocal")
+	if existing then return existing end
+	local created=Instance.new("BindableEvent")
+	created.Name="IsleStoryLocal"
+	created.Parent=ReplicatedStorage
+	return created
+end
+function SP.waypoint(specs,label)
+	if type(specs)~="table" or #specs==0 then notify("There is no waypoint for this step: follow the text.") return end
+	local request=player:FindFirstChild("WayfinderRequest")
+	if request then
+		request:Fire(specs,label)
+		if atlas.Visible then closeAtlas() end
+	else
+		notify("The Wayfinder is still charting the isles. Try again in a moment.")
+	end
+end
+function Pages.drawStory()
+	local ST=Data and Data.Story
+	local s=tbl(state.story)
+	if not ST then para(scroll,"The story journal is not loaded yet.",1) return end
+	heading("THE SUNDERED SKY    /    "..fmt(num(s.qp,0)).." / "..fmt(num(s.qpMax,0)).." STORY QP  ·  "..fmt(num(tbl(state.journal).questPoints,0)).." TOTAL")
+	local cur=tbl(s.cur)
+	local fight=s.fight
+	if type(fight)=="table" then
+		local def=ST.Bosses[fight.boss]
+		card({name="StoryFight",motif="Hunt",title=escape(def and def.name or "Encounter"),subtitle=fight.state=="warmup" and ("Rises in "..num(fight.riseIn,0).."s") or "The fight is on",
+			lines=def and def.mechanics or nil,accent=rgb("B48CFF"),
+			actions={{caption="Leave",name="StoryLeave",fn=function() send("storyLeave",nil) end}}})
+	end
+	if s.done then
+		card({name="StoryDone",motif="Map",title="The sky is whole",subtitle="Loomheart Terrace is open to you",accent=rgb("D8B4FF"),
+			detail="Every chapter of The Sundered Sky is complete. Stand at the Loomstone on Compass Quay or the Loomheart on the Shattered Crown to travel the thread between them.",
+			actions={{caption="Loomstone",name="StoryWayLoomstone",primary=true,fn=function() SP.waypoint({"anchor:Story_QuayLoom","region:Hub"},"The Loomstone") end},
+				{caption="Loomheart",name="StoryWayLoomheart",fn=function() SP.waypoint({"anchor:Story_Loomheart","region:ShatteredCrown"},"Loomheart Terrace") end}}})
+	elseif cur.ch then
+		local ch=ST.Chapters[cur.ch]
+		local step=ch and ch.steps[num(cur.step,1)]
+		if ch and step then
+			local started=num(cur.step,1)>1
+			local reqItems={}
+			for _,r in ipairs(tbl(cur.reqs)) do table.insert(reqItems,{text=escape(tostring(r.text)),met=r.met==true,amount=num(r.need,0)>1 and (fmt(num(r.have,0)).."/"..fmt(num(r.need,0))) or nil}) end
+			local acts={{caption=s.pinned and "Unpin" or "Pin",name="StoryPin",fn=function() send("helperPin",s.pinned and "" or "story") end},
+				{caption="Waypoint",name="StoryWaypoint",primary=true,fn=function() SP.waypoint(cur.specs,step.text) end}}
+			if step.kind=="puzzle" then table.insert(acts,1,{caption="Open puzzle",name="StoryPuzzle",fn=function() SP.local_():Fire("puzzle",step.puzzle) closeAtlas() end}) end
+			card({name="StoryCurrent",motif="Journal",title=escape(ch.index..". "..ch.title),subtitle=started and ("Step "..num(cur.step,1).." of "..#ch.steps) or (cur.ready and "Ready to begin" or "Requirements not met"),
+				accent=rgb("F2D27A"),detail=escape(ch.blurb),
+				before=function(body,nextOrder)
+					if not started and #reqItems>0 then UI.checklist(body,nextOrder,"REQUIREMENTS",reqItems) end
+					local steps={}
+					for j,st in ipairs(ch.steps) do
+						local here=j==num(cur.step,1)
+						table.insert(steps,{text=escape(here and tostring(cur.text or st.text) or st.text),met=j<num(cur.step,1),amount=here and "NOW" or nil})
+					end
+					UI.checklist(body,nextOrder,"STEPS",steps)
+				end,
+				actions=acts})
+		end
+	end
+	-- Lamps.
+	local lamps=tbl(s.lamps)
+	if #lamps>0 then
+		local skills={}
+		for _,sk in ipairs(skillOrder()) do if not (ST.LAMP_EXCLUDE[sk]) then table.insert(skills,sk) end end
+		SP.lampSkill=math.clamp(SP.lampSkill,1,#skills)
+		local skill=skills[SP.lampSkill]
+		local d=depth() or EMPTY
+		local lvl=num(tbl(tbl(d.skills)[skill]).level,1)
+		card({name="StoryLamps",motif="Hero",title=#lamps.." XP lamp"..(#lamps==1 and "" or "s"),subtitle="Next lamp on "..skill..": +"..fmt(ST.lampXp(num(tbl(lamps[1]).rate,1),lvl)).." XP (scales with level)",
+			accent=rgb("FFD166"),
+			actions={{caption="◂",name="StoryLampPrev",fn=function() SP.lampSkill=(SP.lampSkill-2)%#skills+1 render() end},
+				{caption=(SP.confirmSkill==skill and os.clock()<SP.confirmAt) and ("Confirm · "..skill) or ("Rub · "..skill),name="StoryLampRub",primary=true,fn=function()
+					-- QC L10: a confirming second tap (lamps are permanent choices).
+					if SP.confirmSkill==skill and os.clock()<SP.confirmAt then SP.confirmSkill=nil send("storyLamp",skill)
+					else SP.confirmSkill,SP.confirmAt=skill,os.clock()+((Data.Story and Data.Story.LAMP_CONFIRM) or 5) render() end
+				end},
+				{caption="▸",name="StoryLampNext",fn=function() SP.lampSkill=SP.lampSkill%#skills+1 render() end}}})
+	end
+	-- Chapters.
+	heading("CHAPTERS")
+	for i,ch in ipairs(ST.Chapters) do
+		local row=tbl(tbl(s.chapters)[i])
+		local status=row.status or "locked"
+		local items={}
+		for _,r in ipairs(tbl(row.reqs)) do table.insert(items,{text=escape(tostring(r.text)),met=r.met==true}) end
+		local color=status=="done" and mint or (status=="active" and gold or (status=="available" and rgb("9CC8FF") or muted))
+		card({name="StoryChapter"..i,motif="Journal",title=escape(i..". "..ch.title),subtitle=escape(table.concat(ch.regions," · ")).."  ·  +"..(ch.rewards.points or 0).." QP",
+			badge=status=="done" and "✓ Complete" or (status=="active" and "In progress" or (status=="available" and "Ready" or "Locked")),badgeColor=color,
+			before=function(body,nextOrder) if status~="done" and #items>0 then UI.checklist(body,nextOrder,nil,items) end end})
+	end
+	-- Cutscene replays.
+	local unlocked=tbl(s.unlocked)
+	if #unlocked>0 then
+		heading("CUTSCENES")
+		for _,id in ipairs(unlocked) do
+			local c=ST.Cutscenes[id]
+			if c then
+				card({name="StoryCut"..id,motif="Map",title=escape(c.title),subtitle="Chapter "..c.chapter.."  ·  "..math.floor(c.total).."s",
+					actions={{caption="Replay",name="StoryReplay"..id,fn=function() SP.local_():Fire("replay",id) closeAtlas() end}}})
+			end
+		end
+	end
+end
+end
+
+------------------------------------------------------------------------------
 -- Navigation: the Menu plus six primary tabs, each with a section switcher.
 ------------------------------------------------------------------------------
 local tabOrder={"Menu","Journal","Hero","Satchel","Workshop","Hunt","Ledger"}
 local sectionLists={
 	Menu={"Home","Renown","Feats","Resonance","Hearts","Settings"}, -- §31: Renown, Resonance; §45: Feats; §46: Hearts (gathering trees)
-	Journal={"Bearing","Quests","Helper","Goals","Diaries","Construction","Regions","Crew","Calendar","Council","Agility","Commissions","Collection Log","Museum","Motes","Factions"}, -- §33: Helper, Goals
+	Journal={"Bearing","Quests","Story","Helper","Goals","Diaries","Construction","Regions","Crew","Calendar","Council","Agility","Commissions","Collection Log","Museum","Motes","Factions"}, -- §33: Helper, Goals
 	Hero={"Skills","Mastery","Gear","Wardrobe","Combat","Spellbook","Prayer","Enchant","Lectern","Reforge","Accessories","Pets","Calculator"}, -- §33: Calculator; §41: Wardrobe, Lectern
 	Satchel={"Items","Collections","Trails"},
 	Workshop={"Forge","Hearth","Cauldron","Workbench","Crafting","Beaconry","Workers","Home","Garden","Contests"}, -- §37: Beaconry; §39: Contests
@@ -10655,7 +10772,8 @@ local drawers={
 	Journal={Bearing=Pages.drawBearing,Quests=Pages.drawQuests,Diaries=Pages.drawDiaries,Construction=Pages.drawConstruction,Regions=Pages.drawRegions,Crew=Pages.drawCoop,Calendar=Pages.drawCalendar,Council=function() Pages.drawCouncil() end,Agility=Pages.drawAgility,
 		Commissions=Pages.drawCommissions,["Collection Log"]=Pages.drawCollectionLog,Museum=Pages.drawMuseum, -- Commissions & Logs
 		Motes=Pages.drawMotes,Factions=Pages.drawFactions, -- Exploration & Factions
-		Helper=Pages.drawHelper,Goals=Pages.drawGoals}, -- §33 quest helper, goal board
+		Helper=Pages.drawHelper,Goals=Pages.drawGoals, -- §33 quest helper, goal board
+		Story=function() Pages.drawStory() end}, -- §53 The Sundered Sky
 	Hero={Skills=Pages.drawSkills,Mastery=Pages.drawMastery,Gear=Pages.drawGear,Combat=Pages.drawCombat,Spellbook=Pages.drawSpellbook,Prayer=Pages.drawPrayer,Enchant=Pages.drawEnchant,Reforge=function() Pages.drawReforge() end,Accessories=Pages.drawAccessories,Pets=Pages.drawPets,Calculator=Pages.drawCalculator,
 		Wardrobe=function() Pages.drawWardrobe() end,Lectern=function() Pages.drawLectern() end}, -- §41
 	Satchel={Items=Pages.drawItems,Collections=Pages.drawCollections,Trails=Pages.drawTrails},
@@ -11062,6 +11180,7 @@ UI.relay={equip=true,unequip=true,consume=true,sell=true,accessory=true,petAdopt
 	rbTravel=true,riftLeave=true, -- §49 runes.client.lua: the Waygate picker and the Rift HUD's Leave (the server checks the waygate, level and region)
 	shipBuild=true,sailDock=true,sailLeave=true,sailJump=true,sailRole=true,sailTrim=true,sailFire=true,sailSalvage=true,sailFish=true, -- §51 sailing.client.lua: build panel, ship HUD
 	sailContract=true,sailAbandon=true,sailRepair=true,sailCrew=true, -- §51 harbour board picker, contract strip, repairs, crew policy (the server checks everything)
+	storyLamp=true,storyWarp=true,storyLeave=true,storyPuzzle=true, -- §53 Journal › Story and story.client.lua (puzzle panel, encounter strip); the server checks everything
 	tutorial=true, -- §43 coach cards (tutorial.client.lua): dismiss / next / skip / replay / tips (sent by UI.tutorialSend: no queue / gap)
 	raidHost=true,raidJoin=true,raidLeave=true,raidReady=true,raidChallenge=true,raidStart=true,raidUse=true,raidTitle=true} -- §38 raid.client.lua (party board, raid HUD, Raid Log). §34 quick-prayer orb (one atomic verb, queued, never dropped). Earlier: quantity picker (features.client.lua), Resonance, Path rewards
 local remote = ReplicatedStorage:WaitForChild("IsleAction")

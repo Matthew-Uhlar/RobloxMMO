@@ -797,7 +797,9 @@ Core.ACTION_GESTURE = {fight = "attack", worker = "hammer", workerBuild = "hamme
 	runeAltar = "bind", rbGate = "attune", rbWaygate = "attune", rbTravel = "attune", riftJoin = "attune",
 	riftShape = "hammer", riftCharge = "offer",
 	-- §51 Skysailing: the slip hammers, docks and gangways board, harbour boards read.
-	shipwright = "hammer", sailLaunch = "board", sailBoard = "board", harbourBoard = "read"}
+	shipwright = "hammer", sailLaunch = "board", sailBoard = "board", harbourBoard = "read",
+	-- §53 The Sundered Sky: set pieces are surveyed; mirrors, gates / the Loomheart / arena exits attuned.
+	storyInspect = "survey", storyPuzzle = "attune", storyBoss = "attune", storyLeave = "attune", storyWarp = "attune"}
 -- Per-item refinements (the garden's composter lid, its visiting traders).
 Core.ITEM_GESTURE = {gardenOpen = {composter = "open", visitor = "talk", ledger = "read"}}
 -- Garden plots do whatever the plot needs (plant, water, harvest, treat): the
