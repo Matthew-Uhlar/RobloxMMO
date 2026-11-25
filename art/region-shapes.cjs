@@ -255,22 +255,6 @@ module.exports = ({ world, C, PI, hash }) => {
     for (const y of [.65, 1.35]) kit.tube([[0, y, -4], [.04, y - .05, -2], [-.03, y + .03, 0], [.03, y - .04, 2], [0, y, 4]], .09, { n: 4, color: (i, k) => k % 2 ? TINT : TINT_LIGHT });
     for (const z of [-3.8, .2]) kit.tube([[0, .25, z], [0, 1.5, z + 1.6]], .06, { n: 4, color: TINT_DARK });
   });
-  world('CanopyTree', { smooth: 50, tint: '5E9C4E', kind: 'tree' }, kit => {
-    kit.tube([[0, -.1, 0], [.2, 2.5, .1], [-.1, 5.2, 0], [.1, 8.2, .1]], [.7, .52, .4, .22], { n: 7, capStart: true, color: (i, k) => k % 3 === 0 ? C.BARK_DARK : C.BARK });
-    for (let k = 0; k < 4; k++) { const a = k * PI / 2 + .4; kit.tube([[0, .9, 0], [Math.cos(a) * 1.1, .2, Math.sin(a) * 1.1], [Math.cos(a) * 1.7, -.05, Math.sin(a) * 1.7]], [.3, .2, .08], { n: 4, color: C.BARK }) }
-    const tiers = [[3.8, 3.6, .9], [3.1, 5.4, .8], [2.3, 7.1, .7], [1.4, 8.6, .6]];
-    tiers.forEach(([r, y, h], t) => kit.blob((t % 2 ? .3 : -.2), y, (t % 2 ? -.2 : .25), r, h, r, { sub: 1, amount: .14, seed: 520 + t, squash: .45,
-      color: (n, m, i) => n[1] > .4 ? (hash(i, t, 521) < .45 ? TINT_LIGHT : TINT) : TINT_DARK }));
-  });
-  world('FlowerPatch', { smooth: 35, tint: 'D67D6A', kind: 'plant' }, kit => {
-    kit.blob(0, 0, 0, 1.9, .25, 1.9, { sub: 1, amount: .1, seed: 530, color: n => n[1] > .5 ? C.LEAF : C.LEAF_DARK });
-    for (let k = 0; k < 9; k++) {
-      const a = k * 2.4, d = .35 + (k % 3) * .5, x = Math.cos(a) * d, z = Math.sin(a) * d, h = .55 + hash(k, 1, 531) * .5;
-      kit.tube([[x, .1, z], [x + .05, h * .6, z], [x, h, z]], .04, { n: 3, color: C.LEAF_DARK });
-      for (let p = 0; p < 4; p++) { const b = p * PI / 2 + k; kit.jewel(x + Math.cos(b) * .17, h + .02, z + Math.sin(b) * .17, .17, .05, .17, k % 3 === 0 ? TINT_LIGHT : TINT) }
-      kit.jewel(x, h + .05, z, .06, .06, .06, C.AMBER);
-    }
-  });
   world('BannerPole', { smooth: 25, tint: 'C15557', kind: 'sign' }, kit => {
     kit.lathe([[.5, 0], [.45, .3], [.16, .45], [.15, 3.6], [.19, 3.7], [.15, 3.8], [.14, 7.4], [.2, 7.5], [.12, 7.7], [0, 8.1]], { n: 8, capStart: true, color: l => l <= 1 ? C.STONE : l === 3 || l >= 6 ? C.BRASS : C.BARK });
     for (const x of [.15, 1.85]) { kit.tube([[x, 6.85, 0], [x, 6.4, 0]], .03, { n: 3, color: C.GOLD }); kit.jewel(x, 6.3, 0, .1, .16, .1, C.GOLD) }
@@ -300,23 +284,6 @@ module.exports = ({ world, C, PI, hash }) => {
     crate(0, 0, 0, 1.5, .1); crate(1.6, 0, .2, 1.3, -.2); crate(.5, 1.5, .1, 1.2, .5);
     for (const [x, z] of [[-1.3, .4], [-1.1, -.8]]) kit.blob(x, .5, z, .55, .55, .5, { sub: 1, seed: 540 + x, amount: .05, squash: .7, color: n => n[1] > .7 ? C.STRAW : C.CLOTH });
     kit.group({ pos: [1.6, 1.3, .2] }, () => kit.lathe([[.4, 0], [.48, .45], [.4, .9]], { n: 8, capStart: true, capEnd: true, color: l => l === 0 ? C.PLANK : C.BARK }));
-  });
-  world('Glowshroom', { smooth: 40, tint: '7FD3C4', kind: 'plant' }, kit => {
-    const caps = [[0, 0, 2.6, 1.3], [1.1, .4, 1.7, .9], [-.9, .5, 1.4, .75], [.4, -1.0, 1.1, .6], [-.4, -.7, .8, .45]];
-    caps.forEach(([x, z, h, r], k) => {
-      kit.tube([[x, -.05, z], [x + .1 * (k % 2 ? 1 : -1), h * .5, z], [x, h, z]], [r * .28, r * .22, r * .2], { n: 6, color: C.CLOTH });
-      kit.group({ pos: [x, 0, z] }, () => kit.lathe([[r * .35, h - .1], [r, h + .05], [r * .9, h + r * .35], [r * .5, h + r * .6], [0, h + r * .7]], { n: 8, capStart: true, capColor: TINT_DARK, phase: k,
-        color: (l, i) => l === 0 ? TINT_DARK : (hash(i, l, 550 + k) < .25 ? TINT_LIGHT : TINT) }));
-    });
-  });
-  world('CoralFan', { smooth: 35, tint: 'E76F7B', kind: 'plant' }, kit => {
-    kit.blob(0, 0, 0, 1.2, .4, 1.0, { sub: 1, seed: 560, amount: .2, color: C.STONE_LIGHT });
-    for (let k = 0; k < 7; k++) {
-      const a = -1.1 + k * .37, len = 1.6 + hash(k, 1, 561) * 1.0;
-      const tip = [Math.sin(a) * len, .3 + Math.cos(a) * len * 1.2, (hash(k, 2, 561) - .5) * .4];
-      kit.tube([[0, .2, 0], [tip[0] * .5, tip[1] * .55, tip[2]], tip], [.16, .1, .05], { n: 4, color: (i, j) => i === 2 ? TINT_LIGHT : TINT });
-      kit.tube([[tip[0] * .5, tip[1] * .55, tip[2]], [tip[0] * .5 + .35 * (k % 2 ? 1 : -1), tip[1] * .75, tip[2] + .1]], [.08, .03], { n: 3, color: TINT_LIGHT });
-    }
   });
   world('HayCart', { smooth: 25, kind: 'prop' }, kit => {
     kit.bevelBox(0, 1.1, 0, 2.4, .25, 3.6, .05, C.PLANK);

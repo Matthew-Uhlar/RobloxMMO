@@ -256,50 +256,11 @@ module.exports = ({ world, C, PI, hash }) => {
   // Sky reef: a floating cluster of rock with coral fans, tube coral and
   // glowing anemone tips (TINT) clinging to it. Uniform fit 16 x 9 x 14.
   // -------------------------------------------------------------------------
-  world('SkyReef', { smooth: 34, tint: '4FC3B0', kind: 'rock', range: 1400 }, kit => {
-    kit.blob(0, 0, 0, 6.4, 3.4, 5.4, { sub: 2, color: C.STONE, seed: 61, amount: .14, squash: .7 });
-    kit.blob(-3.8, 1.4, 1.6, 2.6, 1.8, 2.4, { sub: 1, color: C.STONE, seed: 62, amount: .16 });
-    kit.blob(3.4, -.4, -2.2, 2.2, 1.6, 2.0, { sub: 1, color: C.STONE_DARK, seed: 63, amount: .18 });
-    for (let k = 0; k < 6; k++) {
-      const a = k * 1.05 + .3, r = 3.6 + hash(k, 2, 64) * 1.8;
-      kit.group({ pos: [Math.cos(a) * r, 2.0 + hash(k, 3, 64), Math.sin(a) * r * .8], rot: [hash(k, 4, 64) * .5 - .25, a, 0] }, () => {
-        kit.prism([[-1.1, 0], [-1.4, 1.2], [-.6, 2.2], [.5, 2.4], [1.3, 1.3], [1.0, 0]], .08, k % 2 ? C.CORAL : TINT, TINT_DARK);
-      });
-    }
-    for (let k = 0; k < 7; k++) {
-      const a = k * .9 + 1.7, r = 2.2 + hash(k, 5, 65) * 2;
-      const x = Math.cos(a) * r, z = Math.sin(a) * r * .8, h = 1.2 + hash(k, 6, 65) * 1.6;
-      kit.group({ pos: [x, 0, z] }, () => kit.lathe([[.3, 2.2], [.26, 2.2 + h * .6], [.34, 2.2 + h], [.2, 2.25 + h]], { n: 8, color: l => l >= 2 ? TINT_LIGHT : C.CORAL }));
-    }
-    for (let k = 0; k < 4; k++) kit.tube([[-2 + k * 1.3, -2.6, .5], [-2.2 + k * 1.3, -4.2 - hash(k, 7, 66) * 1.5, .8]], [.18, .04], { n: 5, color: C.MOSS });
-  });
 
   // -------------------------------------------------------------------------
   // Sky wreck: the broken fore half of a hull, listing, with snapped ribs, a
   // splintered mast and a torn pennant. Uniform fit 10 x 7 x 24.
   // -------------------------------------------------------------------------
-  world('SkyWreck', { smooth: 32, tint: '6E4A30', kind: 'rock', range: 1400 }, kit => {
-    kit.group({ rot: [0, 0, .28] }, () => {
-      const N = 8, sections = [];
-      for (let s = 0; s <= N; s++) {
-        const t = s / N, z = -12 + 16 * t;
-        const w = Math.max(.3, 4.4 * Math.pow(Math.sin(Math.min(1, t / .7) * PI / 2), .6));
-        const top = 4.4 + 1.2 * Math.pow(1 - t, 3), keel = 1.6 * Math.pow(1 - t, 3);
-        const jag = s === N ? 1 : 0;
-        sections.push({ z, points: [[-w, top - jag * 1.2], [-w * .98, keel + (top - keel) * .6], [-w * .6, keel + .3], [0, keel], [w * .6, keel + .3], [w * .98, keel + (top - keel) * .6], [w, top - jag * .4]] });
-      }
-      kit.loft(sections, { capColor: C.BARK_DARK, color: (s, e) => e === 0 || e === 5 ? (s % 2 ? TINT : C.BARK) : C.BARK_DARK });
-      for (let k = 0; k < 4; k++) {
-        const z = 5 + k * 1.6, w = 4.2 - k * .2;
-        kit.tube([[-w, 4.2 - k * .6, z], [-w * .9, 1.8, z], [0, .3, z], [w * .9, 1.8, z], [w * .6, 3.2 - k * .5, z]], .14, { n: 4, color: C.PLANK });
-      }
-      kit.tube([[0, 4.2, -2], [.4, 7.2, -1.4], [.9, 8.6, -1.0]], [.36, .3, .18], { n: 8, color: C.BARK });
-      kit.prism([[.9, 8.4], [2.6, 8.1], [1.8, 7.6], [.9, 7.7]], .05, C.CRIMSON, C.CLOTH, -1.0);
-      kit.tube([[0, 4.6, -11.5], [0, 5.4, -14.5]], [.2, .08], { n: 6, color: C.PLANK });
-      kit.jewel(-2.4, 4.6, -6, .4, .3, .4, C.BRASS);
-      kit.jewel(2.0, 4.4, -2, .32, .26, .32, C.IRON);
-    });
-  });
 
   // -------------------------------------------------------------------------
   // Chart buoy (landmarks): a floating brass buoy with a striped float, a

@@ -41,139 +41,15 @@ module.exports = ({ world, C, PI, hash, jitterOf }) => {
   // -------------------------------------------------------------------------
   // Trees. Foliage uses the tint slots so the World team can recolour species.
   // -------------------------------------------------------------------------
-  world('WindpineTree', { smooth: 50, tint: '4F8A57', kind: 'tree' }, kit => {
-    kit.lathe([[.62, 0], [.48, 1.2], [.38, 4.5], [.24, 9], [.08, 13.4]], { n: 7, capStart: true, color: barkBands(3), jitter: jitterOf(4, .06) });
-    roots(kit, 5, .6, .9, 11);
-    const tiers = [[2.9, 3.0], [2.55, 4.9], [2.15, 6.8], [1.7, 8.6], [1.2, 10.3], [.7, 11.8]];
-    tiers.forEach(([r, y], t) => kit.lathe([[r * .18, y + .35], [r, y - .25], [r * .62, y + .55], [r * .3, y + 1.45], [0, y + 2.05]], {
-      n: 10, phase: t * .7, capStart: true, capColor: TINT_DARK,
-      jitter: (level, i) => level === 1 ? (i % 2 ? 1.12 : .8) * (1 + (hash(i, t, 5) - .5) * .12) : 1,
-      lift: (level, i) => level === 1 ? (i % 2 ? -.28 : .12) : 0,
-      color: (level, i) => level === 0 ? TINT_DARK : level === 1 ? (i % 2 ? TINT : TINT_DARK) : level === 2 ? (hash(i, t, 6) < .5 ? TINT_LIGHT : TINT) : TINT_LIGHT,
-    }));
-  });
-  world('EmberoakTree', { smooth: 55, tint: 'C9572F', kind: 'tree' }, kit => {
-    kit.tube([[0, -.1, 0], [0, 1.8, 0], [.15, 3.6, .1], [.1, 4.6, 0]], [1.05, .78, .72, .6], { n: 8, color: barkBands(7), capStart: true, jitter: jitterOf(7, .08) });
-    roots(kit, 6, 1.0, 1.1, 21, C.BARK, .42);
-    const limbs = [[[0, 4.2, 0], [1.6, 5.4, .3], [2.9, 6.6, .5]], [[0, 4.3, 0], [-1.5, 5.6, -.4], [-2.8, 6.4, -.8]], [[0, 4.4, 0], [-.3, 6.0, 1.4], [-.4, 7.2, 2.4]], [[0, 4.5, 0], [.4, 6.4, -1.2], [.8, 7.8, -1.6]]];
-    for (const limb of limbs) kit.tube(limb, [.42, .3, .16], { n: 5, color: C.BARK });
-    const crowns = [[2.9, 7.2, .5, 2.3], [-2.8, 7.0, -.8, 2.4], [-.4, 7.9, 2.3, 2.2], [.8, 8.6, -1.6, 2.3], [0, 9.0, .1, 2.6], [1.5, 8.0, 1.6, 1.8]];
-    crowns.forEach(([x, y, z, r], i) => kit.blob(x, y, z, r * 1.08, r * .82, r, { sub: 1, amount: .14, seed: 30 + i, squash: .7, color: foliage(30 + i) }));
-  });
-  world('GlimmerbarkTree', { smooth: 45, tint: '7FD3C4', kind: 'tree' }, kit => {
-    const trunk = [];
-    for (let i = 0; i <= 8; i++) { const y = i * 1.35, a = i * .55; trunk.push([Math.cos(a) * .35 * Math.sin(i / 8 * PI), y, Math.sin(a) * .35 * Math.sin(i / 8 * PI)]) }
-    kit.tube(trunk, i => .48 - i * .045, { n: 6, color: (i, k) => (i % 3 === 1 ? C.BARK_DARK : C.MARBLE), capStart: true });
-    roots(kit, 4, .45, .7, 41, C.MARBLE, .24);
-    const branches = [[1, 5.2, 0], [-1, 6.6, .6], [.3, 8.0, -1], [-.5, 9.4, -.2], [.8, 9.0, 1]];
-    branches.forEach(([dx, y, dz], b) => {
-      const end = [dx * 2.6, y + 1.4, dz * 2.6 + (b % 2 ? .6 : -.6)], mid = [dx * 1.3, y + 1.1, dz * 1.3];
-      kit.tube([[0, y - .3, 0], mid, end], [.16, .11, .05], { n: 4, color: C.MARBLE });
-      for (let k = 0; k < 6; k++) {
-        const t = .35 + k * .13, px = mid[0] + (end[0] - mid[0]) * t + (hash(k, b, 1) - .5) * .9, pz = mid[2] + (end[2] - mid[2]) * t + (hash(k, b, 2) - .5) * .9;
-        const py = mid[1] + (end[1] - mid[1]) * t - .45 - hash(k, b, 3) * .4;
-        kit.jewel(px, py, pz, .2, .48, .2, k % 3 === 0 ? TINT_LIGHT : TINT);
-      }
-      kit.blob(end[0], end[1] + .25, end[2], 1.1, .8, 1.1, { sub: 1, amount: .2, seed: 50 + b, squash: .6, color: foliage(50 + b) });
-    });
-    kit.blob(0, 11.6, 0, 1.5, 1.1, 1.5, { sub: 1, amount: .18, seed: 59, color: foliage(59) });
-    kit.jewel(0, 12.9, 0, .32, .7, .32, C.GLINT);
-  });
-  world('StarwoodTree', { smooth: 50, tint: '46599A', kind: 'tree' }, kit => {
-    kit.tube([[0, -.1, 0], [.35, 2.5, 0], [-.2, 5.4, .2], [.25, 8.2, -.1], [0, 10.6, 0]], [.7, .52, .42, .32, .18], { n: 7, color: barkBands(61, C.INK, C.NAVY), capStart: true });
-    roots(kit, 5, .7, .8, 63, C.INK, .3);
-    const platters = [[3.6, 4.6, .3, 0], [3.0, 6.8, -.25, 1], [2.3, 8.9, .2, 2], [1.4, 10.7, 0, 3]];
-    for (const [r, y, dx, t] of platters) {
-      kit.group({ pos: [dx, y, 0] }, () => kit.lathe([[.3, -.35], [r * .75, -.42], [r, -.05], [r * .78, .32], [r * .3, .52], [0, .58]], {
-        n: 11, phase: t * .5, capStart: true, capColor: TINT_DARK, jitter: (level, i) => level >= 1 && level <= 3 ? (1 + (hash(i, t, 64) - .5) * .22) : 1,
-        color: (level, i) => level <= 1 ? TINT_DARK : level === 2 ? TINT : (hash(i, t, 65) < .35 ? TINT_LIGHT : TINT),
-      }));
-      for (let s = 0; s < 3 + t; s++) {
-        const a = s * 2.4 + t, rr = r * (.35 + hash(s, t, 66) * .4);
-        kit.jewel(dx + Math.cos(a) * rr, y + .62, Math.sin(a) * rr, .16, .3, .16, C.FLAME);
-      }
-    }
-    kit.jewel(0, 11.9, 0, .38, .7, .38, C.FLAME);
-  });
-  world('AetherheartTree', { smooth: 50, tint: 'E8D98E', kind: 'tree' }, kit => {
-    kit.lathe([[2.1, 0], [1.55, .8], [1.25, 2.5], [1.15, 5], [1.3, 7.2], [.9, 8.6]], { n: 10, capStart: true, color: barkBands(71, C.BARK, C.BARK_DARK), jitter: jitterOf(72, .1) });
-    // Arching roots that lift the trunk off the island.
-    for (let i = 0; i < 6; i++) {
-      const a = i * PI / 3 + .3, r = 3.4 + hash(i, 73, 1);
-      kit.tube([[Math.cos(a) * .9, 2.4, Math.sin(a) * .9], [Math.cos(a) * 2.2, 2.2, Math.sin(a) * 2.2], [Math.cos(a) * r, .8, Math.sin(a) * r], [Math.cos(a) * (r + .5), -.1, Math.sin(a) * (r + .5)]], [.55, .45, .34, .22], { n: 6, color: C.BARK });
-    }
-    // The heart: a glowing crystal seated in a bark hollow on the front.
-    kit.group({ pos: [0, 3.6, -1.08] }, () => {
-      kit.ring(.62, .22, .32, C.BARK_DARK, 10);
-      kit.jewel(0, 0, -.1, .5, .72, .3, TINT_LIGHT);
-      kit.jewel(0, 0, -.18, .26, .38, .16, C.GLINT);
-    });
-    const limbs = [[3.2, 9.6, 0], [-3.0, 9.8, .8], [.6, 10.3, 3.0], [-.4, 10.2, -3.0]];
-    for (const [x, y, z] of limbs) kit.tube([[0, 7.8, 0], [x * .5, y - .6, z * .5], [x, y, z]], [.55, .38, .2], { n: 6, color: C.BARK });
-    kit.blob(0, 11.6, 0, 4.4, 2.6, 4.4, { sub: 2, amount: .1, seed: 74, squash: .55, color: foliage(74) });
-    limbs.forEach(([x, y, z], i) => kit.blob(x * 1.05, y + .5, z * 1.05, 2.1, 1.5, 2.1, { sub: 1, amount: .16, seed: 80 + i, squash: .6, color: foliage(80 + i) }));
-    for (let i = 0; i < 8; i++) { const a = i * PI / 4 + .2; kit.jewel(Math.cos(a) * 3.9, 9.0 - hash(i, 75, 1) * .6, Math.sin(a) * 3.9, .2, .42, .2, C.FLAME) }
-  });
-  world('MeadowTree', { smooth: 55, tint: '6BAF5A', kind: 'tree' }, kit => {
-    kit.tube([[0, -.1, 0], [.1, 2, 0], [0, 3.6, .1]], [.55, .42, .36], { n: 7, color: barkBands(91), capStart: true });
-    roots(kit, 4, .5, .7, 92, C.BARK, .26);
-    kit.tube([[0, 3.2, 0], [1.1, 4.4, .2], [1.7, 5.4, .3]], [.24, .17, .1], { n: 5, color: C.BARK });
-    kit.tube([[0, 3.4, 0], [-1, 4.6, -.3], [-1.5, 5.6, -.4]], [.24, .17, .1], { n: 5, color: C.BARK });
-    kit.blob(0, 6.3, 0, 2.6, 2.1, 2.5, { sub: 1, amount: .12, seed: 93, squash: .7, color: foliage(93) });
-    kit.blob(1.8, 5.6, .4, 1.6, 1.3, 1.6, { sub: 1, amount: .14, seed: 94, squash: .7, color: foliage(94) });
-    kit.blob(-1.7, 5.7, -.4, 1.7, 1.35, 1.6, { sub: 1, amount: .14, seed: 95, squash: .7, color: foliage(95) });
-    for (let i = 0; i < 5; i++) { const a = i * 1.3; kit.jewel(Math.cos(a) * 2.1, 5.4 + hash(i, 96, 1), Math.sin(a) * 2.1, .16, .16, .16, C.ROSE) }
-  });
 
   // -------------------------------------------------------------------------
   // Rock and cliff pieces (flat-shaded facets).
   // -------------------------------------------------------------------------
-  world('Boulder', { smooth: 0, kind: 'rock' }, kit => {
-    kit.blob(0, 1.3, 0, 2.2, 1.6, 1.9, { sub: 2, amount: .14, seed: 101, squash: .55, color: rock(101) });
-  });
-  world('RockCluster', { smooth: 0, kind: 'rock' }, kit => {
-    kit.blob(0, 1.1, 0, 1.9, 1.5, 1.7, { sub: 2, amount: .15, seed: 111, squash: .5, color: rock(111) });
-    kit.blob(1.9, .6, .7, 1.1, .85, 1.0, { sub: 1, amount: .18, seed: 112, squash: .5, color: rock(112) });
-    kit.blob(-1.6, .5, -.9, .9, .7, .9, { sub: 1, amount: .2, seed: 113, squash: .5, color: rock(113) });
-    kit.blob(.6, .3, -1.6, .6, .45, .55, { sub: 1, amount: .2, seed: 114, squash: .5, color: rock(114, false) });
-  });
-  world('CliffPiece', { smooth: 0, kind: 'rock' }, kit => {
-    // Columnar basalt: hexagonal columns with slanted, mossy tops.
-    const columns = [[0, 0, 6.2], [1.15, .6, 5.1], [-1.1, .5, 5.6], [.1, 1.3, 4.4], [1.1, -.8, 4.2], [-1.0, -.7, 4.9], [-2.1, .2, 3.6], [2.2, -.1, 3.3], [.05, -1.4, 3.0], [-.9, 1.6, 3.8], [1.4, 1.6, 2.6]];
-    columns.forEach(([x, z, h], i) => kit.group({ pos: [x, 0, z] }, () => kit.lathe([[.68, -.4], [.66, h * .5], [.64, h]], {
-      n: 6, phase: .25, capStart: true, capEnd: true, lift: (level, k) => level === 2 ? (Math.cos(k * PI / 3 + i) * .35) : 0,
-      color: (level, k) => level === 3 ? (hash(i, k, 120) < .6 ? C.MOSS : C.STONE_LIGHT) : (hash(level, k + i * 7, 121) < .35 ? C.STONE_DARK : k % 2 ? C.STONE : C.STONE_LIGHT),
-    })));
-    kit.blob(0, -.1, 0, 3.4, 1.0, 3.0, { sub: 1, amount: .2, seed: 122, squash: .3, color: rock(122) });
-  });
 
   // -------------------------------------------------------------------------
   // Ore veins per tier: tinted crystal clusters seated in a rock bed.
   // Tier 1 copper/aetherite, 2 brassite/sunsteel, 3 voidstone/starmetal, 4 prismite/celestium.
   // -------------------------------------------------------------------------
-  world('OreVein1', { smooth: 25, tint: 'B87333', kind: 'ore' }, kit => {
-    rockBed(kit, 1.9, 1.0, 1.6, 131, 2);
-    crystal(kit, .1, .7, 0, .1, -.15, 1.5, .26, 1);
-    crystal(kit, .7, .5, .4, .3, -.6, 1.0, .2, 2);
-    crystal(kit, -.6, .5, .3, .35, .55, 1.1, .2, 3);
-  });
-  world('OreVein2', { smooth: 25, tint: 'D4A84B', kind: 'ore' }, kit => {
-    rockBed(kit, 2.3, 1.3, 2.0, 141, 2);
-    for (const [x, z, rx, rz, len, r, s] of [[0, 0, 0, 0, 2.2, .34, 1], [.9, .4, .2, -.55, 1.5, .26, 2], [-.85, .35, .3, .55, 1.6, .26, 3], [.3, -.8, -.6, -.2, 1.3, .22, 4], [-.4, -.7, -.5, .35, 1.1, .2, 5]])
-      crystal(kit, x, .95, z, rx, rz, len, r, s);
-  });
-  world('OreVein3', { smooth: 25, tint: '5B3F8C', kind: 'ore' }, kit => {
-    rockBed(kit, 2.6, 1.4, 2.3, 151, 2);
-    for (const [x, z, rx, rz, len, r, s] of [[0, 0, 0, .05, 3.0, .44, 1], [1.1, .5, .2, -.5, 2.0, .32, 2], [-1.1, .4, .25, .5, 2.2, .32, 3], [.4, -1.0, -.55, -.2, 1.8, .3, 4], [-.6, -.9, -.5, .35, 1.5, .26, 5], [1.3, -.6, -.3, -.7, 1.2, .22, 6], [-1.5, -.2, 0, .8, 1.1, .22, 7]])
-      crystal(kit, x, 1.0, z, rx, rz, len, r, s);
-    kit.ring(1.6, .18, .12, TINT_LIGHT, 14, PI / 2, 0, PI * 2, 1.25);
-  });
-  world('OreVein4', { smooth: 25, tint: 'E86FB8', kind: 'ore' }, kit => {
-    rockBed(kit, 3.0, 1.5, 2.7, 161, 2);
-    for (const [x, z, rx, rz, len, r, s] of [[0, 0, 0, 0, 4.2, .58, 1], [1.3, .6, .2, -.45, 2.6, .38, 2], [-1.3, .5, .25, .45, 2.8, .38, 3], [.5, -1.2, -.5, -.2, 2.3, .34, 4], [-.7, -1.1, -.45, .3, 2.0, .3, 5], [1.6, -.7, -.3, -.65, 1.6, .26, 6], [-1.8, -.3, 0, .75, 1.5, .26, 7], [.2, 1.4, .6, .1, 1.7, .28, 8], [-.9, 1.3, .5, .5, 1.3, .22, 9]])
-      crystal(kit, x, 1.05, z, rx, rz, len, r, s);
-    for (let i = 0; i < 5; i++) { const a = i * 2 * PI / 5; kit.jewel(Math.cos(a) * 2.0, 4.0 + (i % 2) * .5, Math.sin(a) * 2.0, .18, .42, .18, i % 2 ? TINT_LIGHT : C.GLINT) }
-  });
 
   // -------------------------------------------------------------------------
   // Crops (soil mound + plants). Tint = produce colour.
@@ -182,43 +58,6 @@ module.exports = ({ world, C, PI, hash, jitterOf }) => {
     kit.bevelBox(0, .22, 0, 3.0, .44, 2.2, .14, { top: C.SOIL, side: C.SOIL, bevel: C.SOIL, bottom: C.BARK_DARK });
     for (const z of [-.55, .55]) kit.lathe([[.12, .44], [.12, .5]], { n: 4, sx: 11, color: C.BARK_DARK, phase: PI / 4, capEnd: true, capStart: true, wobble: () => [0, z] });
   };
-  world('CropWheat', { smooth: 40, tint: 'E9C46A', kind: 'crop' }, kit => {
-    soil(kit);
-    for (let i = 0; i < 10; i++) {
-      const x = -1.15 + (i % 5) * .57 + (hash(i, 171, 1) - .5) * .2, z = (i < 5 ? -.55 : .55) + (hash(i, 171, 2) - .5) * .2, h = 1.9 + hash(i, 171, 3) * .5, lean = (hash(i, 171, 4) - .5) * .5;
-      kit.tube([[x, .4, z], [x + lean * .3, .4 + h * .5, z], [x + lean, .4 + h, z + lean * .3]], [.05, .045, .035], { n: 4, color: C.LEAF });
-      kit.group({ pos: [x + lean, .4 + h, z + lean * .3], rot: [0, i, lean * .5] }, () => kit.lathe([[.06, -.05], [.14, .2], [.13, .55], [0, .8]], { n: 5, color: (l, k) => k % 2 ? TINT : TINT_DARK }));
-      kit.group({ pos: [x, .5, z], rot: [0, i * 1.7, .9] }, () => kit.jewel(0, .35, 0, .05, .4, .12, C.LEAF));
-    }
-  });
-  world('CropGlowcap', { smooth: 45, tint: 'F4A261', kind: 'crop' }, kit => {
-    soil(kit);
-    for (const [x, z, s, i] of [[-.8, -.4, 1.1, 0], [.35, -.5, .8, 1], [.9, .45, 1.0, 2], [-.3, .5, .7, 3], [-1.15, .5, .55, 4]]) kit.group({ pos: [x, .42, z], scale: s, rot: [0, i, (hash(i, 181, 1) - .5) * .3] }, () => {
-      kit.lathe([[.2, 0], [.16, .5], [.14, .9], [.18, 1.05]], { n: 7, capStart: true, color: C.CLOTH });
-      kit.lathe([[.18, .95], [.62, 1.0], [.58, 1.22], [.36, 1.45], [0, 1.52]], { n: 9, capStart: true, capColor: C.CLOTH, color: (l) => l === 0 ? TINT_DARK : l === 3 ? TINT_LIGHT : TINT });
-      for (let k = 0; k < 3; k++) { const a = k * 2.1 + i; kit.jewel(Math.cos(a) * .32, 1.38, Math.sin(a) * .32, .08, .04, .08, C.GLINT) }
-    });
-  });
-  world('CropBloom', { smooth: 40, tint: 'B8C0FF', kind: 'crop' }, kit => {
-    soil(kit);
-    for (const [x, z, h, i] of [[-.85, -.4, 1.6, 0], [.4, -.45, 1.3, 1], [.95, .45, 1.8, 2], [-.4, .5, 1.2, 3]]) {
-      kit.tube([[x, .4, z], [x + .1, .4 + h * .6, z], [x, .4 + h, z]], [.05, .045, .04], { n: 4, color: C.LEAF });
-      for (let k = 0; k < 3; k++) kit.group({ pos: [x, .55, z], rot: [0, k * 2.1 + i, .95] }, () => kit.jewel(0, .32, 0, .05, .38, .14, k % 2 ? C.LEAF : C.LEAF_DARK));
-      kit.group({ pos: [x, .4 + h, z], rot: [.3, i, 0] }, () => {
-        for (let p = 0; p < 6; p++) kit.group({ rot: [0, p * PI / 3, .9] }, () => kit.jewel(0, .32, 0, .17, .34, .06, p % 2 ? TINT : TINT_LIGHT));
-        kit.jewel(0, .06, 0, .14, .12, .14, C.FLAME);
-      });
-    }
-  });
-  world('CropBush', { smooth: 45, tint: 'FFE66D', kind: 'crop' }, kit => {
-    soil(kit);
-    kit.blob(-.4, 1.15, 0, 1.0, .85, .9, { sub: 1, amount: .2, seed: 191, squash: .6, color: (n, m, i) => n[1] > .4 ? C.LEAF : hash(i, 191, 1) < .5 ? C.LEAF_DARK : C.LEAF });
-    kit.blob(.6, 1.0, .1, .85, .7, .8, { sub: 1, amount: .2, seed: 192, squash: .6, color: (n, m, i) => n[1] > .4 ? C.LEAF : hash(i, 192, 1) < .5 ? C.LEAF_DARK : C.LEAF });
-    for (let i = 0; i < 9; i++) {
-      const a = i * 2.3, r = .75 + hash(i, 193, 1) * .25, x = (i % 2 ? .6 : -.4) + Math.cos(a) * r * .8, z = Math.sin(a) * r * .8;
-      kit.group({ pos: [x, .9 + hash(i, 193, 2) * .7, z], rot: [0, a, 0] }, () => { kit.jewel(0, 0, 0, .2, .14, .2, TINT); kit.jewel(0, 0, 0, .14, .2, .07, TINT_LIGHT) });
-    }
-  });
 
   // -------------------------------------------------------------------------
   // Fishing buoy, lamps and lanterns.
@@ -806,19 +645,6 @@ module.exports = ({ world, C, PI, hash, jitterOf }) => {
     });
     for (let i = 0; i < 5; i++) { const a = i * 1.26; kit.jewel(Math.cos(a) * 4.5, 66 + i * 2.2, Math.sin(a) * 4.5, .3, .7, .3, i % 2 ? TINT : TINT_LIGHT) }
   });
-  // Gloomhollow stalactite (1.8 x 7, hanging): drip cone with a glowing tip and
-  // two smaller cones, rooted in the cavern roof at the top.
-  world('Stalactite', { smooth: 35, tint: 'B59CFF', kind: 'rock' }, kit => {
-    const drip = (x, z, top, len, r, seed) => kit.group({ pos: [x, 0, z] }, () => kit.lathe([[0, top - len], [r * .22, top - len * .9], [r * .45, top - len * .72], [r * .7, top - len * .45], [r * .9, top - len * .18], [r, top]], {
-      n: 7, capEnd: true, capColor: C.STONE_DARK, jitter: (l, i) => l === 0 ? 1 : 1 + (hash(l, i, seed) - .5) * .25,
-      color: (l, i) => l === 0 ? TINT_LIGHT : l === 1 ? TINT : l === 2 && i % 2 ? TINT_DARK : hash(l, i, seed + 1) < .4 ? C.STONE_DARK : i % 3 ? C.SLATE : C.STONE,
-    }));
-    drip(0, 0, 7, 7, .9, 951);
-    drip(.55, .3, 7, 3.2, .38, 952);
-    drip(-.5, -.35, 7, 4.1, .42, 953);
-    drip(.1, -.6, 7, 2.2, .3, 954);
-    kit.blob(0, 6.75, 0, .95, .3, .95, { sub: 1, amount: .15, seed: 955, color: rock(955, false) });
-  });
   // Ruined column (2.2 wide, 4-9 tall): fluted drum on a plinth with a broken,
   // jagged top, rubble and creeping ivy.
   world('RuinColumn', { smooth: 30, kind: 'statue' }, kit => {
@@ -855,102 +681,8 @@ module.exports = ({ world, C, PI, hash, jitterOf }) => {
     for (let i = 0; i < 5; i++) { const a = i * 1.3; kit.jewel(Math.cos(a) * .14, 3.33, Math.sin(a) * .14, .09, .07, .09, i % 2 ? TINT_LIGHT : TINT) }
     for (let i = 0; i < 4; i++) { const a = i * PI / 2 + .4; kit.tube([[Math.cos(a) * .32, 3.48, Math.sin(a) * .32], [Math.cos(a) * .4, 3.62, Math.sin(a) * .4], [Math.cos(a) * .33, 3.78, Math.sin(a) * .33]], .03, { n: 4, color: C.IRON }) }
   });
-  // Herb bed (round 4.6 x 1.6 slot): stone-ringed raised bed of soil with tinted
-  // herb sprigs and small blossoms. Crop patches use their resource's crop shape.
-  world('CropBed', { smooth: 40, tint: '9DF3D7', kind: 'crop' }, kit => {
-    for (let i = 0; i < 11; i++) { const a = i * 2 * PI / 11; kit.blob(Math.cos(a) * 2.02, .26, Math.sin(a) * 2.02, .34, .28, .3, { sub: 0, amount: .15, seed: 981 + i, color: rock(981 + i) }) }
-    kit.lathe([[1.95, .05], [1.92, .48], [1.55, .6], [.8, .66], [0, .68]], { n: 12, color: (l, i) => l >= 2 && hash(i, 982, l) < .3 ? C.BARK_DARK : C.SOIL });
-    const clumps = [[0, 0, 1.0], [1.05, .3, .8], [-.95, .5, .85], [.3, -1.0, .75], [-.55, -.8, .7], [.55, 1.0, .7], [-.2, 1.2, .6]];
-    clumps.forEach(([x, z, s], c) => {
-      for (let k = 0; k < 5; k++) kit.group({ pos: [x, .62, z], rot: [0, k * 2 * PI / 5 + c, .45 + hash(k, c, 983) * .3] }, () => kit.jewel(0, .42 * s, 0, .09 * s, .44 * s, .05 * s, k % 3 === 0 ? TINT_LIGHT : k % 3 === 1 ? TINT : TINT_DARK));
-      kit.jewel(x, .62 + .78 * s, z, .07, .07, .07, c % 2 ? C.GLINT : C.LAVENDER);
-    });
-  });
-  // Shrub (2.6 cube slot, sunk 0.4 into the ground): clustered leafy mounds with
-  // a few berries. Tint = foliage.
-  world('Bush', { smooth: 45, tint: '6C9A58', kind: 'plant' }, kit => {
-    kit.blob(0, 1.15, 0, 1.25, 1.0, 1.2, { sub: 1, amount: .14, seed: 991, squash: .6, color: foliage(991) });
-    kit.blob(.6, 1.5, .35, .75, .7, .7, { sub: 1, amount: .16, seed: 992, squash: .7, color: foliage(992) });
-    kit.blob(-.55, 1.55, -.3, .7, .75, .7, { sub: 1, amount: .16, seed: 993, squash: .7, color: foliage(993) });
-    kit.blob(.05, 2.0, -.05, .55, .6, .55, { sub: 1, amount: .18, seed: 994, color: foliage(994) });
-    for (let i = 0; i < 9; i++) { const a = i * 2.4, r = .9 + hash(i, 995, 1) * .3, y = 1.0 + hash(i, 995, 2) * 1.1; kit.jewel(Math.cos(a) * r, y, Math.sin(a) * r, .09, .09, .09, i % 3 ? C.ROSE : C.GLINT) }
-    for (let i = 0; i < 4; i++) { const a = i * PI / 2 + .5; kit.tube([[Math.cos(a) * .2, 0, Math.sin(a) * .2], [Math.cos(a) * .7, .55, Math.sin(a) * .7]], [.07, .04], { n: 4, color: C.BARK }) }
-  });
-  // Layered outcrop (owns its three-rock model, about 8.5 x 4.6 x 9.2): stepped
-  // strata ledges with mossy tops and loose scree.
-  world('RockOutcrop', { smooth: 0, kind: 'rock' }, kit => {
-    const ledge = (x, z, r, y0, h, yaw, seed, layers) => kit.group({ pos: [x, 0, z], rot: [0, yaw, 0] }, () => {
-      for (let k = 0; k < layers; k++) {
-        const rr = r * (1 - k * .2), yb = y0 + k * h, top = yb + h;
-        kit.lathe([[rr * 1.02, yb], [rr * 1.06, yb + h * .45], [rr, top]], {
-          n: 7, sx: 1.25, capStart: k === 0, capEnd: true, jitter: jitterOf(seed + k, .16), lift: (l, i) => l === 2 ? (hash(i, seed + k, 7) - .5) * h * .4 : 0,
-          color: (l, i) => l === 3 ? (hash(i, seed + k, 8) < .55 ? C.MOSS : C.STONE_LIGHT) : hash(l, i + k * 7, seed) < .3 ? C.STONE_DARK : l === 1 ? C.STONE_LIGHT : C.STONE,
-          capColor: C.STONE_DARK,
-        });
-      }
-    });
-    ledge(-.4, -.6, 2.6, -.3, 1.35, .2, 1001, 3);
-    ledge(2.4, 1.6, 1.7, -.2, 1.1, 1.3, 1011, 2);
-    ledge(-2.4, 2.1, 1.3, -.2, .85, 2.1, 1021, 2);
-    for (let i = 0; i < 7; i++) { const a = i * .9 + .3, r = 3.2 + hash(i, 1031, 1) * .9; kit.blob(Math.cos(a) * r, .12, Math.sin(a) * r * 1.05, .32, .2, .28, { sub: 0, amount: .25, seed: 1032 + i, color: rock(1032 + i) }) }
-  });
-  // Palm (tilted trunk host owning its frond disk): ringed, curving trunk with
-  // drooping fronds and coconuts. Uniform fit.
-  world('PalmTree', { smooth: 40, tint: '6FA05A', kind: 'tree' }, kit => {
-    const trunk = [];
-    for (let k = 0; k <= 9; k++) { const t = k / 9; trunk.push([1.3 * t * t, t * 6.4, .1 * Math.sin(t * PI)]) }
-    kit.tube(trunk, i => .42 - i * .025, { n: 7, color: (i, k) => i % 2 ? C.BARK : C.PLANK, jitter: (i, k) => i % 2 ? 1.08 : .96 });
-    roots(kit, 4, .45, .5, 1041, C.BARK, .2);
-    const top = [1.3, 6.4, .1];
-    for (let f = 0; f < 8; f++) {
-      const a = f * 2 * PI / 8 + .2, droop = .8 + hash(f, 1042, 1) * .6, len = 3.3 + hash(f, 1042, 2) * .5;
-      kit.group({ pos: top, rot: [0, -a, 0] }, () => {
-        for (let s = 0; s < 4; s++) {
-          const t0 = s / 4, t1 = (s + 1) / 4, x0 = len * t0, x1 = len * t1;
-          const y0 = .55 * Math.sin(t0 * PI * .9) - droop * t0 * t0 * 1.8, y1 = .55 * Math.sin(t1 * PI * .9) - droop * t1 * t1 * 1.8;
-          const w0 = .55 * Math.sin(PI * (.15 + t0 * .8)), w1 = .55 * Math.sin(PI * (.15 + t1 * .8));
-          kit.loft([{ z: 0, points: [[0, 0], [w0, .06], [0, -.04], [-w0, .06]] }, { z: 1, points: [[0, 0], [w1, .06], [0, -.04], [-w1, .06]] }].map((sec, q) => ({ z: q ? x1 : x0, points: sec.points.map(([px, py]) => [px, py + (q ? y1 : y0)]) })), { capStart: s === 0, capEnd: s === 3, color: (sec, e) => e < 2 ? (s % 2 ? TINT : TINT_LIGHT) : TINT_DARK });
-        }
-        kit.tube([[0, .05, 0], [0, .5, len * .5], [0, -.2, len * .95]].map(([px, py, pz]) => [px, py - droop * Math.pow(pz / len, 2) * 1.6, pz]), [.06, .04, .02], { n: 3, color: TINT_DARK });
-      });
-    }
-    for (let c = 0; c < 3; c++) { const a = c * 2.1; kit.blob(top[0] + Math.cos(a) * .35, top[1] - .35, top[2] + Math.sin(a) * .35, .24, .26, .24, { sub: 0, color: C.BARK_DARK }) }
-  });
-  // Dead tree (trunk host owning one bare bough; a narrow, mostly planar box):
-  // gnarled trunk with split crown, broken limbs and bracket fungus.
-  world('DeadTree', { smooth: 35, tint: 'B8A68A', kind: 'tree' }, kit => {
-    kit.tube([[0, -.1, 0], [.1, 2.0, 0], [-.15, 3.8, .05], [.05, 5.2, 0]], [.55, .45, .36, .26], { n: 7, capStart: true, color: barkBands(1051, C.BARK, C.BARK_DARK), jitter: jitterOf(1052, .1) });
-    roots(kit, 4, .5, .6, 1053, C.BARK_DARK, .26);
-    const limbs = [[[.05, 4.4, 0], [.9, 5.7, .25], [1.6, 7.0, .4], [1.85, 7.7, .35]], [[0, 4.9, 0], [-.55, 6.2, -.2], [-.95, 7.4, -.3]], [[.05, 5.2, 0], [.25, 6.6, .1], [.1, 7.6, 0]], [[-.1, 3.3, 0], [-.8, 3.9, .1], [-1.2, 4.8, .15]]];
-    for (const limb of limbs) kit.tube(limb, i => .26 - i * .07, { n: 5, color: (i, k) => k % 3 ? C.BARK : C.BARK_DARK });
-    for (const [p, q] of [[[1.25, 6.3, .3], [1.75, 6.5, -.2]], [[-.75, 6.8, -.25], [-1.2, 7.0, .2]], [[-1.0, 4.4, .1], [-1.35, 4.3, -.3]]]) kit.tube([p, q], [.08, .03], { n: 4, color: C.BARK_DARK });
-    for (const [y, a] of [[1.6, .3], [2.4, 2.4], [3.1, 4.0]]) kit.group({ pos: [Math.cos(a) * .5, y, Math.sin(a) * .5], rot: [0, -a, 0] }, () => kit.lathe([[0, 0], [.32, .04], [.3, .1], [0, .12]], { n: 7, sz: .6, color: l => l === 0 ? TINT_DARK : TINT }));
-  });
   // -------------------------------------------------------------------------
   // §42 Gathering Feel: depleted node variants (client-local mesh slots, no
   // server parts). Uniform fit: the slot box is the node's footprint.
   // -------------------------------------------------------------------------
-  // Tree stump: a sawn trunk with growth rings on the cut, flared roots and a
-  // few wood chips. Tint = the bark.
-  world('TreeStump', { smooth: 40, tint: '7A5638', kind: 'node' }, kit => {
-    kit.lathe([[.78, 0], [.7, .4], [.62, 1.0], [.6, 1.18], [0, 1.2]], {
-      n: 10, capStart: true, jitter: jitterOf(1201, .07),
-      color: (level, i) => level >= 3 ? (i % 2 ? C.PLANK : C.STRAW) : level === 0 ? TINT_DARK : (hash(i, 1202, level) < .3 ? TINT_DARK : TINT),
-    });
-    kit.group({ pos: [0, 1.2, 0] }, () => { kit.ring(.42, .03, .02, TINT_DARK, 10); kit.ring(.24, .03, .02, TINT_DARK, 8) });
-    roots(kit, 5, .62, .55, 1203, TINT, .26);
-    for (let k = 0; k < 4; k++) { const a = k * 1.7 + .4; kit.blob(Math.cos(a) * 1.25, .06, Math.sin(a) * 1.25, .16, .06, .1, { sub: 0, seed: 1204 + k, color: C.PLANK }) }
-  });
-  // Depleted rock: the vein's boulder with its crystals and colour gone, plain
-  // grey stone with a few loose chips. Tint = the stone.
-  world('DepletedRock', { smooth: 0, tint: '767A80', kind: 'node' }, kit => {
-    kit.blob(0, .55, 0, 1.6, .8, 1.35, { sub: 2, amount: .16, seed: 1211, squash: .45, color: (n, m, i) => n[1] > .6 ? (hash(i, 1212, 1) < .4 ? TINT_LIGHT : TINT) : n[1] < -.2 ? TINT_DARK : TINT });
-    for (let k = 0; k < 5; k++) { const a = k * 1.3 + .2, r = 1.7 + hash(k, 1213, 1) * .4; kit.blob(Math.cos(a) * r, .1, Math.sin(a) * r, .2, .14, .18, { sub: 0, amount: .25, seed: 1214 + k, color: TINT_DARK }) }
-  });
-  // Tilled soil: a bare bed of furrows and clods (the crop harvested). Tint = the soil.
-  world('TilledSoil', { smooth: 30, tint: '5C422C', kind: 'node' }, kit => {
-    kit.lathe([[1.95, 0], [1.9, .22], [1.5, .3], [0, .32]], { n: 12, capStart: true, color: (l, i) => l >= 2 ? TINT : TINT_DARK });
-    for (let row = -2; row <= 2; row++) kit.tube([[-1.45, .3, row * .62], [0, .38, row * .62], [1.45, .3, row * .62]], [.13, .15, .13], { n: 5, color: row % 2 ? TINT_LIGHT : TINT });
-    for (let k = 0; k < 6; k++) { const a = k * 1.1 + .3, r = .6 + hash(k, 1221, 1) * 1.0; kit.blob(Math.cos(a) * r, .38, Math.sin(a) * r, .12, .08, .1, { sub: 0, seed: 1222 + k, color: TINT_DARK }) }
-  });
 };
