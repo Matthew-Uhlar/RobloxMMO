@@ -680,6 +680,14 @@ function Sway.select()
 		-- rest frame follows the host (read from the host, since our own sway
 		-- write may already have replaced the forge's). Any other writer is
 		-- caught by comparing the clone with our last write.
+		-- §54 QC M3: a host-less swayer (terrain dressing) that was re-seated
+		-- publishes its new rest frame; re-arm on it instead of swaying around
+		-- the old one.
+		local rest = if e.host == nil then part:GetAttribute("SwayRest") else nil
+		if typeof(rest) == "CFrame" and rest ~= e.rest then
+			e.rest = rest
+			if e.epoch ~= 0 then arm(e, rest); part.CFrame = e.base; e.written = nil end
+		end
 		if e.epoch ~= 0 and e.hostCF and e.host.Parent and e.host.CFrame ~= e.hostCF then
 			arm(e, e.host.CFrame * e.rel)
 			if e.written then part.CFrame = e.base end

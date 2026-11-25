@@ -1204,3 +1204,94 @@ Environment art team. Owner feedback: islands felt small and the graphics poor; 
   - cliff dressing on the stretched hulls of the largest isles; satellite rocks against bridges, vents and ship lanes;
   - EditableMesh memory on phones with five pools (world 24, dress 16, outfit 18, creature 8 templates, plus 2 grounds);
   - the first-fill hitch (≤ 160 clones per second); grass sway feel at High's 30 Hz; crystal tint saturation per region profile (§35).
+
+### §54 QC round (art root cause, stricter metrics, client fixes)
+
+The QC review of §54 found that the art problem is game-wide: per-face palette colour and coarse rings read faceted in every catalog. This round fixes the pipeline for all catalogs and the §54 code findings. Each finding has one regression test, tagged [A1]–[L7] in `verify-environment.luau` and in `verify-mesh.luau`'s §54 block.
+
+- **A1 Per-vertex colour, every catalog.** The forge (`vertexColors` in `forge.client.lua`) no longer gives a triangle one palette colour. Each face's palette colour (tinted) is multiplied by two continuous fields at its centre:
+  - an ambient-occlusion height ramp (0.86 at the foot to 1 at the top);
+  - low-frequency 3D value noise (±5 %, wavelength six mean edge lengths, so ≥ 3× the face size).
+  
+  The colour is spread onto the vertices per material family. Families are a generator table (`FAMILY` in `art/generate-props.cjs`, emitted as `families` in every catalog): tint / tint dark / tint light, the woods, the leaves and moss, the stones, ember and flame, bone and horn, the golds, the blues. A shape's `blend` list joins moss, soil, snow or straw to its tint family. Colours are then diffused over the mesh until no in-family edge changes luminance by more than 0.05 (at most 32 passes).
+  - Different families keep a hard seam (declared seams: bark against leaf, metal against cloth).
+  - `SetFaceColors` uses each corner's own vertex colour.
+  - This covers world, region, building, beacon, rune, ship, creature, outfit and terrain shapes without changing any silhouette or catalog format. The existing palette rules (bands, facet-index stripes) now come out as soft gradients.
+  - `art/render-icons.py` mirrors the algorithm, so every preview shows it.
+  - A1 test: every catalog shape keeps in-family edge steps ≤ 0.06 (worst measured 0.053) and has no specks (no vertex more than 0.05 off its family neighbours).
+- **A2/A3/A4 Stricter metrics.** A shape passes when 98 % of its corner shading normals, by area, are within the limit of their face normal, ≤ 2 % of its shared edges are sharper than 35°, its subdivision suits its placed size, and its chord error is within bounds.
+  - Normal deviation limit: organic shapes 15°; hulls 20°, measured at real fit scale on the r 46 and r 160 islands.
+  - Subdivision comes from the generator's call log (`art/ShapeCalls.json`: every primitive with its segments or subdivision and radius). A ring needs ≥ 16 segments and ≤ 2 studs per segment at `maxScale` (3.5 for far LODs, cliff pieces and satellites). A blob needs subdivision ≥ 2, finer for big ones.
+  - Chord error: ≤ 0.02 relative (16+ segments); hulls ≤ 0.15 studs in world space.
+  - The generator rejects a terrain shape or hull that misses any of these, and `verify-mesh` re-checks them.
+  - **Terrain catalog: all 30 shapes pass.**
+  - **Other organic catalogs: honest status.** World trees, rocks, ores, crops, plants and nodes, the 64 creature shapes and the 35 outfits were measured: none of the 131 meets the organic bar. Their profiles turn too sharply and they use flat caps, boxes and jewels. A global segment uplift (16+ segments, sub ≥ 2) costs about 1.4× triangles and still leaves them at roughly 22° / 10 %; passing needs per-shape re-authoring of their silhouettes. They are held to `art/organic-baseline.json` (`tools/organic-baseline.cjs`), a ratchet: `verify-mesh` fails if any of them gets worse. Re-authoring them is a follow-up for the owning teams.
+  - A3 hull colour check: the forged wall's row and column steps are ≤ 0.08 luminance.
+- **A5 Per-shape art.** The terrain catalog was re-authored (30 shapes).
+  - Lofted canopy clusters: a main crown at subdivision 3 wrapped by 7–10 lobes at subdivision 2, with two-octave fbm displacement, a vertical crown gradient and AO. Canopies carry `sphere` entries, and the forge bends their shading normals 55 % toward the crown's centre.
+  - Every species has a near LOD and a far LOD (`<Name>Far`, about 2–3.5k tris).
+  - SpirePine: drooping branch fans (28 segments on the near LOD, the floor for the 2.8× hero) with scallops that dip toward the rim only, a rounded rim fold from `capProfile`, darker needle sub-rings under the lower fans, and irregular phase and tilt per tier.
+  - SnowPine (Skyreach): snow on the upward needle faces, blended into the green.
+  - Stones: subdivision 2–3, displaced by continuous 3D fbm (never per-vertex jitter), with smoothstep moss blended in.
+  - Grass blades: wider elliptic sections spread by normal angle (`even`), a root-to-tip colour ramp, and open hair-thin tips instead of folded poles.
+  - Mushroom caps and petal cups use `capProfile` (rounded rim, ≤ 18° per level).
+  - Branches and roots are Bezier tubes.
+  - **Cliff walls at absolute size.** `T.hull` builds them per island in `shared/TerrainArt.lua` and forges them through the ground pool:
+    - a smooth turf lip bulging out of the ground's rim ring (the ground and the wall share that ring), receding into a soil band tucked under it;
+    - strata courses in absolute studs: at least 4.5 studs and never finer than six wall levels, with relief fading in under the soil band, low-frequency rim noise and a tuck toward the keel;
+    - one segment per 7 studs of rim on High (8 Balanced, 10 Lite) and 28 strata levels (24 / 16), so chord error ≤ 0.15 studs;
+    - per-vertex strata colours and smooth normals.
+    
+    While the forged wall shows, terrain.client.lua hides the foundation and its catalog cliff clone (and a home's fractured-cliff slabs) locally. The catalog hulls remain the far LOD and the Sky Chart's: 80 segments, 24–28 levels, smooth crease 45, authored for the 3.4:1 stretch of the thick wall. World catalog cap 1300 → 1700 KB (+~300 KB).
+  - **Lead decision applied:** `island()` in `world.server.lua` makes the foundation a wall `clamp(R * 0.18, 10, 30)` studs tall (attribute `WallHeight`; was 6) and hangs the keel from its foot. Colliders, walkable tops, paths, bridges, vents, ship lanes and home islands are unchanged: verify-world, -regions, -home, -sailing, -map, -features and -exploration pass, and verify-environment checks wall height and keel position. Static parts are unchanged (3,660 outside AetherIsles ≤ 4,000).
+- **H1:**
+  - A refused shape backs off on its own (2 s doubling to 64 s) while the cycle carries on.
+  - Classes are drawn far-first: satellites, cliff, far trees, near trees, rocks, clutter.
+  - Desktop keeps ≤ 2 tint templates per dressing shape, like every world shape; regions use ≤ 2 tints per species.
+- **H2:**
+  - Ground and wall refusals back off per island and per cell.
+  - "failed" is never retried for that island and cell.
+  - Backoffs clear on a tier change.
+  - The forge's ground pool has its own failure counter and stop flag (`groundPool`); its failures never stop the dressing.
+  - Ground specs are cached per (descriptor, cell) (L6).
+- **H3:**
+  - Parts added to an island become footprints that clear the dressing around them (no full re-plan) once the island has been quiet for 1 s.
+  - A removal, a meadow resize or a `BuildRadius` change re-plans the island once quiet.
+  - The first plan also waits for a quiet model.
+- **H4:** a ground or wall part that vanished releases its record (meadow and foundation restored) and backs off. The meadow and foundation hides are re-asserted every cycle.
+- **M1:** footprints are oriented. Upright cylinders and balls are discs; upright boxes and ShapeBoxes are rectangles on their own axes; tilted parts use their projected box.
+- **M2:** ground heights use the clearance minus the grid's largest edge, so no triangle touching a footprint rises. The test samples every ground triangle (barycentric points) against every path: ≤ 0.04 everywhere.
+- **M3:** a re-seated swaying clone sets `SwayRest`, and the sway layer re-arms on it.
+- **M4:** the ground ends in a skirt ring folded 0.35 studs in, under the curb (y −0.6), facing outward.
+- **M5:** cliff pieces hang from the forged wall's soil band under the lip, or from the catalog rim (foundation radius × 1.012) when only the far hull shows.
+- **M6:**
+  - Cycles run in 2 ms slices per frame on Heartbeat, at most one cycle per second.
+  - Ground and wall building yields every 400 vertices.
+  - Grounds travel to the forge as flat arrays.
+  - Islands beyond the tier's reach are skipped before their items are touched.
+  - The forge never watches the `IsleDressing` root.
+- **M7:** the phone dress pool keeps 12 templates. A pool blocked by a memory or budget error retries after 60 s.
+- **L1** the roll is halved (+0.11 / −0.06). **L2** island signals are disconnected when an island goes. **L3** the island's own meadow, foundation and underside are ignored by identity, so a plaza named Meadow still blocks. **L4** the hash splits 32-bit products, so no intermediate passes 2^53 for any input. **L5** a missing or NaN `IslandCenter` (or a tiny meadow) is skipped. **L6** ground and wall specs are cached. **L7** the node clearance is tested at 3 studs.
+- **Budgets (round 2).**
+
+| Tier | Clutter | Rocks | Near trees | Far trees | Cliff | Satellites | Grounds + walls | Worst case |
+|---|---|---|---|---|---|---|---|---|
+| High | 200 | 20 | 16 (110 studs) | 70 (420) | 36 | 24 | 4 (cell 4.5, 7-stud / 28-level walls) | 1.07M ≤ 1.1M |
+| Balanced | 110 | 10 | 6 (80) | 40 (300) | 20 | 14 | 3 | ≤ 600k |
+| Lite (phones) | 50 | 4 | 0 | 18 (200) | 8 | 8 | 2 (cell 7, 10-stud / 16-level walls) | 244k ≤ 250k |
+| Performance | 20 | 0 | 0 | 10 (140) | 0 | 4 | 0 | ≤ 100k |
+
+  Forge ceilings (desktop / phones):
+  - dress templates 44 / 12, template triangles 160k / 40k;
+  - clones 720 / 120, placed triangles 1M / 240k;
+  - ground pool 8 / 4 meshes and 90k / 24k triangles.
+
+  The terrain catalog is about 1 MB (lazily decoded), against about 190 KB before.
+- **Previews (round 2, viewed):** `environment-kit.png`, `environment-hulls.png`, `environment-catalog-colour.png` (other teams' shapes with per-vertex colour), `environment-mosswake-ground.png`, `environment-mosswake-lite.png`, `environment-windpine.png`, `environment-meadow-reach.png`, `environment-cliff-close.png`, `environment-skyreach.png`, `environment-tidewater.png`, `environment-shattered-crown.png`, `environment-gloomhollow.png`.
+- **Needs Studio judgement (added):**
+  - the per-vertex colour of every catalog under Future lighting (AO strength, mottling);
+  - the forged wall's turf lip seen from below;
+  - the 10–30-stud walls next to docks and ship lanes;
+  - the dense near-LOD trees on desktop frame rate (16 × ~5–7k tris);
+  - phone memory with the 12-template dress pool;
+  - SnowPine's snow amount.

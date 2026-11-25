@@ -196,3 +196,10 @@ The islands themselves got an environment pass, all client-side and decorative (
 - **Cliffs and undersides:** hanging roots, vine curtains, crystal veins, and 2–6 satellite rocks per island. The hulls are now smooth strata with overhangs.
 
 The meshes are 22 smooth shapes in `art/TerrainCatalog.lua`. The rules live in `shared/TerrainArt.lua`, and the client in `terrain.client.lua`, which uses the forge's new dress and ground pools. Tier budgets: High / Balanced / Lite (phones) / Performance, with far LOD by radius. Grass and trees sway through §50. Tests: `verify-environment.luau`. Previews: `docs/screenshots/environment-*.png`. The Studio checklist is in contract §54.
+
+**§54 QC round.**
+- **Per-vertex colour for every catalog.** The forge now diffuses each face's palette colour, with an AO height ramp and soft mottling, over the vertices of its material family. Colours turn into smooth gradients everywhere; material seams such as bark against leaf stay sharp.
+- **Stricter smoothness metrics** live in verify-mesh. All 30 terrain shapes and the island hulls pass them. The other teams' organic shapes (131 of them) do not yet, and need re-authoring; until then they are held to a ratchet baseline (`art/organic-baseline.json`).
+- **Islands have thick cliff walls,** `clamp(R*0.18, 10, 30)` studs (lead decision). Near islands get a forged wall at absolute size: a turf lip, a soil band, then strata.
+- **Near and far tree LODs.**
+- **All the client findings are fixed:** backoffs, quiet-model re-planning, 2 ms slices, oriented footprints, skirt and SwayRest. Details are in contract §54, "QC round".

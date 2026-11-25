@@ -199,14 +199,21 @@ local outfitPool = {failures = 0, blocked = false, stop = stopReason}
 -- per-tier caps (shared/TerrainArt.lua) under these hard ceilings. Desktop keeps
 -- each region tint; phones share one variant per shape.
 local DRESS_KINDS = {clutter = true, shrub = true, foliage = true, cliff = true, satellite = true}
-local DRESS_TEMPLATE_CAP = if mobile then 16 else 44
-local DRESS_TRIANGLE_CAP = if mobile then 22000 else 64000
-local DRESS_INSTANCE_CAP = if mobile then 200 else 720
-local DRESS_PLACED_CAP = if mobile then 190000 else 720000
-local dressPool = {failures = 0, blocked = false, stop = stopReason}
--- Forged ground tops (one unique EditableMesh per island, no template).
-local GROUND_CAP = if mobile then 2 else 4
-local GROUND_TRIANGLE_CAP = if mobile then 10000 else 36000
+-- §54 QC M7: phones keep a 12-template dress pool; H1: desktop keeps at most
+-- VARIANTS (2) tint templates per dressing shape like every other world shape.
+local DRESS_TEMPLATE_CAP = if mobile then 12 else 44
+local DRESS_TRIANGLE_CAP = if mobile then 40000 else 160000
+local DRESS_INSTANCE_CAP = if mobile then 120 else 720
+local DRESS_PLACED_CAP = if mobile then 240000 else 1000000
+-- M7: a pool blocked by a memory / budget error retries after BLOCK_RETRY seconds.
+local BLOCK_RETRY = 60
+local dressPool = {failures = 0, blocked = false, blockedAt = 0, stop = stopReason}
+-- Forged ground tops and cliff walls (one unique EditableMesh each, no template).
+-- H2: their own failure counter and stop flag (a failing ground never stops the
+-- dressing, and vice versa).
+local GROUND_CAP = if mobile then 4 else 8 -- meshes (a ground and a wall per island)
+local GROUND_TRIANGLE_CAP = if mobile then 24000 else 90000
+local groundPool = {failures = 0, stop = stopReason}
 local variants = {} -- shapeName -> {key -> tint | false}
 local function tintDistance(a, b)
 	if not a or not b then return if a == b then 0 else 1 end
@@ -301,6 +308,161 @@ local function cornerNormals(data)
 	return result
 end
 
+-- §54 QC A1: per-vertex colour for every catalog. Each face's palette colour
+-- (tinted) takes two continuous fields at its centre (a height ramp / ambient
+-- occlusion by depth, and low-frequency 3D value noise whose wavelength is six
+-- mean edge lengths), is spread onto its vertices per material family (the
+-- catalog's `families`; a shape's `blend` indices join its tint family), then
+-- diffused over the mesh until no edge inside a family changes luminance by more
+-- than VERTEX_DL (at most VERTEX_PASSES passes). Different families keep a hard
+-- seam (bark against leaf). Returns the unique colours and, per face, the colour
+-- index of each corner.
+local VERTEX_DL, VERTEX_PASSES = 0.05, 32
+local function luma(r, g, b) return 0.2126 * r + 0.7152 * g + 0.0722 * b end
+local function vhash(x, y, z)
+	local h = bit32.bxor(bit32.band(x * 73856093, 0xFFFFFFFF), bit32.band(y * 19349663, 0xFFFFFFFF), bit32.band(z * 83492791, 0xFFFFFFFF))
+	h = bit32.band(bit32.bxor(h, bit32.rshift(h, 13)) * 1274126177 % 4294967296, 0xFFFFFFFF)
+	return bit32.bxor(h, bit32.rshift(h, 16)) / 4294967295
+end
+local function vnoise(x, y, z)
+	local ix, iy, iz = math.floor(x), math.floor(y), math.floor(z)
+	local fx, fy, fz = x - ix, y - iy, z - iz
+	fx, fy, fz = fx * fx * (3 - 2 * fx), fy * fy * (3 - 2 * fy), fz * fz * (3 - 2 * fz)
+	local function c(a, b, d) return vhash(ix + a, iy + b, iz + d) end
+	local x00 = c(0, 0, 0) + (c(1, 0, 0) - c(0, 0, 0)) * fx
+	local x10 = c(0, 1, 0) + (c(1, 1, 0) - c(0, 1, 0)) * fx
+	local x01 = c(0, 0, 1) + (c(1, 0, 1) - c(0, 0, 1)) * fx
+	local x11 = c(0, 1, 1) + (c(1, 1, 1) - c(0, 1, 1)) * fx
+	return ((x00 + (x10 - x00) * fy) + ((x01 + (x11 - x01) * fy) - (x00 + (x10 - x00) * fy)) * fz) * 2 - 1
+end
+local function vertexColors(data, catalog, tint)
+	local families = catalog.families or {}
+	local blend = {}
+	if type(data.blend) == "table" then for _, i in ipairs(data.blend) do blend[i] = true end end
+	local tintFamily = families[catalog.tintIndex or 11] or (catalog.tintIndex or 11)
+	local function familyOf(shade) return if blend[shade] then tintFamily else (families[shade] or shade) end
+	local verts, faces = data.vertices, data.faces
+	local lo, hi, edgeSum, edgeCount = math.huge, -math.huge, 0, 0
+	for _, v in ipairs(verts) do lo, hi = math.min(lo, v[2]), math.max(hi, v[2]) end
+	for _, f in ipairs(faces) do
+		local a, b = verts[f[1]], verts[f[2]]
+		edgeSum += math.sqrt((a[1] - b[1]) ^ 2 + (a[2] - b[2]) ^ 2 + (a[3] - b[3]) ^ 2)
+		edgeCount += 1
+	end
+	local wave = math.max(0.05, 6 * edgeSum / math.max(1, edgeCount))
+	local span = math.max(1e-3, hi - lo)
+	local R, G, B, W, fam, keyOf = {}, {}, {}, {}, {}, {}
+	local cache = {}
+	for f, face in ipairs(faces) do
+		local shade = face[4]
+		local base = cache[shade]
+		if not base then base = paletteColor(catalog, shade, tint); cache[shade] = base end
+		local a, b, c = verts[face[1]], verts[face[2]], verts[face[3]]
+		local cx, cy, cz = (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3, (a[3] + b[3] + c[3]) / 3
+		-- Ambient occlusion by depth (feet and undersides darker) and soft mottling.
+		local t = (cy - lo) / span
+		local k = (0.86 + 0.14 * t * t * (3 - 2 * t)) * (1 + 0.05 * vnoise(cx / wave, cy / wave, cz / wave))
+		local ux, uy, uz = b[1] - a[1], b[2] - a[2], b[3] - a[3]
+		local vx, vy, vz = c[1] - a[1], c[2] - a[2], c[3] - a[3]
+		local area = math.sqrt((uy * vz - uz * vy) ^ 2 + (uz * vx - ux * vz) ^ 2 + (ux * vy - uy * vx) ^ 2) + 1e-9
+		local family = familyOf(shade)
+		fam[f] = family
+		local keys = {}
+		for k2 = 1, 3 do
+			local key = face[k2] * 512 + (family % 512)
+			keys[k2] = key
+			R[key] = (R[key] or 0) + base.R * k * area
+			G[key] = (G[key] or 0) + base.G * k * area
+			B[key] = (B[key] or 0) + base.B * k * area
+			W[key] = (W[key] or 0) + area
+		end
+		keyOf[f] = keys
+	end
+	local list, index = {}, {}
+	for key, w in pairs(W) do
+		R[key], G[key], B[key] = R[key] / w, G[key] / w, B[key] / w
+		table.insert(list, key)
+	end
+	table.sort(list)
+	for i, key in ipairs(list) do index[key] = i end
+	-- Same-family neighbours (edges of faces of that family).
+	local nbr = {}
+	for i in ipairs(list) do nbr[i] = {} end
+	local seen = {}
+	for f in ipairs(faces) do
+		local keys = keyOf[f]
+		for k2 = 1, 3 do
+			local a, b = index[keys[k2]], index[keys[k2 % 3 + 1]]
+			local pair = if a < b then a * 1048576 + b else b * 1048576 + a
+			if a ~= b and not seen[pair] then
+				seen[pair] = true
+				table.insert(nbr[a], b)
+				table.insert(nbr[b], a)
+			end
+		end
+	end
+	local r, g, b = {}, {}, {}
+	for i, key in ipairs(list) do r[i], g[i], b[i] = R[key], G[key], B[key] end
+	local passes = 0
+	while passes < VERTEX_PASSES do
+		local worst = 0
+		for i = 1, #list do
+			local li = luma(r[i], g[i], b[i])
+			for _, j in ipairs(nbr[i]) do
+				local d = math.abs(li - luma(r[j], g[j], b[j]))
+				if d > worst then worst = d end
+			end
+		end
+		if worst <= VERTEX_DL then break end
+		passes += 1
+		local nr, ng, nb = {}, {}, {}
+		for i = 1, #list do
+			local n = #nbr[i]
+			if n == 0 then nr[i], ng[i], nb[i] = r[i], g[i], b[i]
+			else
+				local sr, sg, sb = 0, 0, 0
+				for _, j in ipairs(nbr[i]) do sr += r[j]; sg += g[j]; sb += b[j] end
+				nr[i], ng[i], nb[i] = 0.5 * r[i] + 0.5 * sr / n, 0.5 * g[i] + 0.5 * sg / n, 0.5 * b[i] + 0.5 * sb / n
+			end
+		end
+		r, g, b = nr, ng, nb
+	end
+	local colors = {}
+	for i = 1, #list do colors[i] = Color3.new(math.clamp(r[i], 0, 1), math.clamp(g[i], 0, 1), math.clamp(b[i], 0, 1)) end
+	local corners = {}
+	for f in ipairs(faces) do
+		local keys = keyOf[f]
+		corners[f] = {index[keys[1]], index[keys[2]], index[keys[3]]}
+	end
+	return colors, corners, passes, nbr, fam
+end
+-- Foliage normals (§54 A5): a shape's `sphere` entries {x, y, z, r, blend} bend
+-- the shading normals of its tint-family faces within r of the centre toward
+-- the radial direction, so a lobed canopy shades like one soft volume.
+local function sphereNormals(data, catalog, normals)
+	if type(data.sphere) ~= "table" then return normals end
+	local families = catalog.families or {}
+	local tintFamily = families[catalog.tintIndex or 11] or (catalog.tintIndex or 11)
+	for f, face in ipairs(data.faces) do
+		if (families[face[4]] or face[4]) == tintFamily then
+			for k = 1, 3 do
+				local v = data.vertices[face[k]]
+				local p = Vector3.new(v[1], v[2], v[3])
+				for _, s in ipairs(data.sphere) do
+					local c = Vector3.new(s[1], s[2], s[3])
+					local d = p - c
+					if d.Magnitude <= s[4] and d.Magnitude > 1e-4 then
+						local n = normals[f][k]:Lerp(d.Unit, s[5])
+						normals[f][k] = if n.Magnitude > 1e-4 then n.Unit else normals[f][k]
+						break
+					end
+				end
+			end
+		end
+	end
+	return normals
+end
+
 local function buildTemplate(shapeName, data, catalog, tint)
 	local mesh
 	local ok, result = pcall(function()
@@ -309,16 +471,13 @@ local function buildTemplate(shapeName, data, catalog, tint)
 		local ids = {}
 		for i, xyz in ipairs(data.vertices) do ids[i] = mesh:AddVertex(Vector3.new(xyz[1], xyz[2], xyz[3])) end
 		local colorIds, normalIds = {}, {}
-		local normals = cornerNormals(data)
+		local normals = sphereNormals(data, catalog, cornerNormals(data))
+		local colors, corners = vertexColors(data, catalog, tint)
+		for i, color in ipairs(colors) do colorIds[i] = mesh:AddColor(color, 1) end
 		for f, face in ipairs(data.faces) do
-			local shade = face[4]
-			local colorId = colorIds[shade]
-			if not colorId then
-				colorId = mesh:AddColor(paletteColor(catalog, shade, tint), 1)
-				colorIds[shade] = colorId
-			end
 			local triangle = mesh:AddTriangle(ids[face[1]], ids[face[2]], ids[face[3]])
-			mesh:SetFaceColors(triangle, {colorId, colorId, colorId})
+			local cc = corners[f]
+			mesh:SetFaceColors(triangle, {colorIds[cc[1]], colorIds[cc[2]], colorIds[cc[3]]})
 			local corner = {}
 			for k, n in ipairs(normals[f]) do
 				local key = string.format("%.3f,%.3f,%.3f", n.X, n.Y, n.Z)
@@ -409,13 +568,14 @@ local function template(shapeName, data, catalog, tint, boss)
 	-- region) keep their exact Tint on desktop; phones share variants as usual.
 	if variantCount(shapeName) >= VARIANTS and not (data.kind == "sign" and not SIGN_KIT_SHAPES[shapeName])
 		and not (data.exactTint == true and not mobile) and not (CREATURE_KINDS[data.kind] and (not mobile or boss))
-		and not (OUTFIT_KINDS[data.kind] and not mobile) and not (DRESS_KINDS[data.kind] and not mobile) then
+		and not (OUTFIT_KINDS[data.kind] and not mobile) then
 		return nearestVariant(shapeName, tint)
 	end
 	local triangles = data.tris or #data.faces
 	local creature = CREATURE_KINDS[data.kind] == true
 	local outfit = OUTFIT_KINDS[data.kind] == true
 	local dress = DRESS_KINDS[data.kind] == true
+	if dress and dressPool.blocked and os.clock() - dressPool.blockedAt >= BLOCK_RETRY then dressPool.blocked = false end -- M7
 	local stopped = if dress then (dressPool.stop or dressPool.blocked) elseif outfit then (outfitPool.stop or outfitPool.blocked) elseif creature then (creaturePool.stop or creaturePool.blocked) else (stopReason or newTemplatesBlocked)
 	if stopped or (not fits(creature, triangles, boss, outfit, dress) and not evictFor(triangles, creature, boss, outfit, dress)) then
 		stats.templateSkips += 1
@@ -460,7 +620,7 @@ local function template(shapeName, data, catalog, tint, boss)
 		local blocked = message:find("budget", 1, true) or message:find("memory", 1, true) or message:find("limit", 1, true)
 		if dress then
 			dressPool.failures += 1
-			if blocked then dressPool.blocked = true end
+			if blocked then dressPool.blocked = true; dressPool.blockedAt = os.clock() end
 			if dressPool.failures >= LIMITS.failures then dressPool.stop = "unavailable" end
 		elseif outfit then
 			outfitPool.failures += 1
@@ -895,8 +1055,11 @@ local function consider(part)
 	end)
 	task.defer(step)
 end
+local DRESS_ROOT = "IsleDressing" -- terrain.client.lua's local clones (M6: never watched)
 local function watch(instance)
 	if not instance:IsA("BasePart") or registry[instance] then return end
+	local parent = instance.Parent
+	if parent and (parent.Name == DRESS_ROOT or (parent.Parent and parent.Parent.Name == DRESS_ROOT)) then return end
 	if instance:GetAttribute("Shape") ~= nil then consider(instance); return end
 	pcall(function()
 		local connection
@@ -1107,6 +1270,7 @@ end
 local dressTokens, dressNext = {}, 0 -- token -> {entry, clone}
 local function dressVisual(shapeName, tint)
 	if type(shapeName) ~= "string" then return nil, "unknown" end
+	if dressPool.blocked and os.clock() - dressPool.blockedAt >= BLOCK_RETRY then dressPool.blocked = false end -- M7
 	if dressPool.stop or dressPool.blocked then return nil, "unavailable" end
 	local data, catalog = lookup(shapeName)
 	if not data or not DRESS_KINDS[data.kind] then return nil, "unknown" end
@@ -1150,33 +1314,37 @@ end
 -- GROUND_TRIANGLE_CAP triangles; failures count against the dress pool.
 local groundTokens, groundNext = {}, 0 -- token -> {part, mesh, triangles}
 local function groundVisual(spec)
-	if type(spec) ~= "table" or type(spec.vertices) ~= "table" or type(spec.faces) ~= "table" then return nil, "unknown" end
-	if dressPool.stop or dressPool.blocked then return nil, "unavailable" end
-	local triangles = #spec.faces
+	if type(spec) ~= "table" or type(spec.positions) ~= "table" or type(spec.indices) ~= "table" then return nil, "unknown" end
+	if groundPool.stop then return nil, "unavailable" end
+	local pos, col, nor, idx = spec.positions, spec.colors, spec.normals, spec.indices
+	local triangles = #idx // 3
 	if stats.grounds >= GROUND_CAP or stats.groundTriangles + triangles > GROUND_TRIANGLE_CAP then return nil, "budget" end
 	stats.grounds += 1
 	stats.groundTriangles += triangles
-	local lo, hi = Vector3.new(math.huge, math.huge, math.huge), Vector3.new(-math.huge, -math.huge, -math.huge)
-	for _, v in ipairs(spec.vertices) do
-		local p = Vector3.new(v[1], v[2], v[3])
-		lo, hi = lo:Min(p), hi:Max(p)
+	local lx, ly, lz, hx, hy, hz = math.huge, math.huge, math.huge, -math.huge, -math.huge, -math.huge
+	for i = 1, #pos, 3 do
+		local x, y, z = pos[i], pos[i + 1], pos[i + 2]
+		if x < lx then lx = x end; if y < ly then ly = y end; if z < lz then lz = z end
+		if x > hx then hx = x end; if y > hy then hy = y end; if z > hz then hz = z end
 	end
+	local lo, hi = Vector3.new(lx, ly, lz), Vector3.new(hx, hy, hz)
 	local centre = (lo + hi) / 2
 	local mesh
 	local ok, part = pcall(function()
 		mesh = AssetService:CreateEditableMesh()
 		assert(mesh, "CreateEditableMesh returned nil")
 		local ids, colorIds, normalIds = {}, {}, {}
-		for i, v in ipairs(spec.vertices) do
-			ids[i] = mesh:AddVertex(Vector3.new(v[1], v[2], v[3]))
-			local c, n = spec.colors[i], spec.normals[i]
-			colorIds[i] = mesh:AddColor(Color3.new(c[1], c[2], c[3]), 1)
-			normalIds[i] = mesh:AddNormal(Vector3.new(n[1], n[2], n[3]))
+		for v = 1, #pos // 3 do
+			local i = v * 3 - 2
+			ids[v] = mesh:AddVertex(Vector3.new(pos[i], pos[i + 1], pos[i + 2]))
+			colorIds[v] = mesh:AddColor(Color3.new(col[i], col[i + 1], col[i + 2]), 1)
+			normalIds[v] = mesh:AddNormal(Vector3.new(nor[i], nor[i + 1], nor[i + 2]))
 		end
-		for _, f in ipairs(spec.faces) do
-			local triangle = mesh:AddTriangle(ids[f[1]], ids[f[2]], ids[f[3]])
-			mesh:SetFaceColors(triangle, {colorIds[f[1]], colorIds[f[2]], colorIds[f[3]]})
-			mesh:SetFaceNormals(triangle, {normalIds[f[1]], normalIds[f[2]], normalIds[f[3]]})
+		for f = 1, #idx, 3 do
+			local a, b, c = idx[f], idx[f + 1], idx[f + 2]
+			local triangle = mesh:AddTriangle(ids[a], ids[b], ids[c])
+			mesh:SetFaceColors(triangle, {colorIds[a], colorIds[b], colorIds[c]})
+			mesh:SetFaceNormals(triangle, {normalIds[a], normalIds[b], normalIds[c]})
 		end
 		local content = Content.fromObject(mesh)
 		local okOptions, result = pcall(AssetService.CreateMeshPartAsync, AssetService, content, {CollisionFidelity = Enum.CollisionFidelity.Box})
@@ -1193,8 +1361,8 @@ local function groundVisual(spec)
 		stats.grounds -= 1
 		stats.groundTriangles -= triangles
 		if mesh then pcall(mesh.Destroy, mesh) end
-		dressPool.failures += 1
-		if dressPool.failures >= LIMITS.failures then dressPool.stop = "unavailable" end
+		groundPool.failures += 1
+		if groundPool.failures >= LIMITS.failures then groundPool.stop = "unavailable" end
 		warn("[MeshForge] ground could not be meshed: " .. tostring(part))
 		return nil, "failed"
 	end
@@ -1219,7 +1387,7 @@ step()
 if MeshForgeTest then
 	MeshForgeTest.forge = {stats = stats, limits = LIMITS, templates = templates, rescan = rescan, consider = consider, step = step,
 		templateTint = templateTint, kitShapes = SIGN_KIT_SHAPES, kitMetals = KIT_METALS, variants = VARIANTS,
-		cornerNormals = cornerNormals, styleSign = styleSign, stopReason = function() return stopReason end,
+		cornerNormals = cornerNormals, vertexColors = vertexColors, sphereNormals = sphereNormals, styleSign = styleSign, stopReason = function() return stopReason end,
 		radii = {build = BUILD_RADIUS, unload = UNLOAD_RADIUS, building = BUILDING_RADIUS}, buildRadius = buildRadius, releaseRadius = releaseRadius, mobile = mobile, backoff = backoff, registry = registry, final = final, placed = placed,
 		chart = {visual = chartVisual, accept = chartAccept, release = chartRelease, tokens = chartTokens, pinCap = CHART_PIN_CAP, reserve = CHART_RESERVE},
 		creature = {visual = creatureVisual, release = creatureRelease, tokens = creatureTokens, cap = CREATURE_TEMPLATE_CAP, triangleCap = CREATURE_TRIANGLE_CAP, count = creatureTemplateCount, kinds = CREATURE_KINDS,
@@ -1228,7 +1396,7 @@ if MeshForgeTest then
 			instanceCap = OUTFIT_INSTANCE_CAP, kinds = OUTFIT_KINDS, pool = outfitPool},
 		dress = {visual = dressVisual, release = dressRelease, tokens = dressTokens, cap = DRESS_TEMPLATE_CAP, triangleCap = DRESS_TRIANGLE_CAP,
 			instanceCap = DRESS_INSTANCE_CAP, placedCap = DRESS_PLACED_CAP, kinds = DRESS_KINDS, pool = dressPool,
-			ground = groundVisual, groundRelease = groundRelease, groundTokens = groundTokens, groundCap = GROUND_CAP, groundTriangleCap = GROUND_TRIANGLE_CAP},
+			ground = groundVisual, groundRelease = groundRelease, groundTokens = groundTokens, groundCap = GROUND_CAP, groundTriangleCap = GROUND_TRIANGLE_CAP, groundPool = groundPool, blockRetry = BLOCK_RETRY},
 		-- Final mesh box for a tagged part, without forging: size, CFrame, kind.
 		describe = function(part)
 			local shapeName = shapeOf(part)

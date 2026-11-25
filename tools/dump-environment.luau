@@ -23,29 +23,41 @@ local function cfList(cf)
 end
 local function hex(c) return string.format("%02X%02X%02X", math.floor(c.R * 255 + .5), math.floor(c.G * 255 + .5), math.floor(c.B * 255 + .5)) end
 local desc = T.collect(isle, b.Data.Island.ProtectedCircles)
-local scene = {meshes = {}, boxes = {}, items = {}, ground = nil}
+local scene = {meshes = {}, boxes = {}, items = {}, surfaces = {}}
 local bud = T.Budgets[tier]
-if bud.grounds > 0 then
-	local g = T.ground(desc, bud.cell)
-	local verts = {}
-	for i, v in ipairs(g.vertices) do verts[i] = {v[1] + desc.center[1], v[2] + desc.center[2], v[3] + desc.center[3]} end
-	scene.ground = {vertices = verts, colors = g.colors, normals = g.normals, faces = g.faces}
+-- Forged ground top and cliff wall (flat arrays, island space -> world).
+local function surface(m)
+	local verts, cols, nors, faces = {}, {}, {}, {}
+	for v = 1, #m.positions // 3 do
+		verts[v] = {m.positions[v * 3 - 2] + desc.center[1], m.positions[v * 3 - 1] + desc.center[2], m.positions[v * 3] + desc.center[3]}
+		cols[v] = {m.colors[v * 3 - 2], m.colors[v * 3 - 1], m.colors[v * 3]}
+		nors[v] = {m.normals[v * 3 - 2], m.normals[v * 3 - 1], m.normals[v * 3]}
+	end
+	for f = 1, #m.indices, 3 do table.insert(faces, {m.indices[f], m.indices[f + 1], m.indices[f + 2]}) end
+	table.insert(scene.surfaces, {vertices = verts, colors = cols, normals = nors, faces = faces})
+end
+local forged = bud.grounds > 0
+if forged then
+	surface(T.ground(desc, bud.cell))
+	surface(T.hull(desc, bud.hullSeg, bud.hullLevels))
 end
 local focus = {desc.center[1], desc.center[2], desc.center[3]}
 if process.args[3] then
 	local i = 1
 	for v in string.gmatch(process.args[3], "[^,]+") do focus[i] = tonumber(v); i += 1 end
 end
-for _, it in ipairs(T.visible(T.plan(desc), tier, focus, false)) do
-	local y = if bud.grounds > 0 then it.y else (if it.kind == "cliff" or it.kind == "satellite" then it.y else desc.top - 0.04)
+for _, e in ipairs(T.visible(T.plan(desc), tier, focus, false)) do
+	local it = e.item
 	local cf
-	if it.kind == "cliff" then
-		local p = Vector3.new(it.x, it.y, it.z)
+	if it.class == "cliff" then
+		local x, y, z = T.cliffPosition(it, forged)
+		local p = Vector3.new(x, y, z)
 		cf = CFrame.lookAt(p, p + Vector3.new(it.out[1], 0, it.out[2]))
 	else
+		local y = if forged and it.class ~= "satellite" then it.y else it.flatY
 		cf = CFrame.new(it.x, y, it.z) * CFrame.Angles(0, it.yaw, 0)
 	end
-	table.insert(scene.items, {shape = it.shape, tint = it.tint, scale = it.scale, cf = cfList(cf)})
+	table.insert(scene.items, {shape = e.shape, tint = it.tint, scale = it.scale, cf = cfList(cf)})
 end
 -- The forge's own layout (MeshForgeTest describe) for every other Shape host.
 local World = luau.load(fs.readFile("art/WorldCatalog.lua"), {injectGlobals = true})()
@@ -75,7 +87,11 @@ for _, p in isle:GetDescendants() do
 	end
 end
 for _, p in isle:GetDescendants() do
-	if p:IsA("BasePart") and (p.Name == "Floating foundation" or p.Name == "Island underside") and p.Parent == isle then
+	if p:IsA("BasePart") and forged and p.Name == "Floating foundation" and p.Parent == isle then
+		owned[p] = true -- the forged wall stands for it
+	elseif p:IsA("BasePart") and forged and p.Name == "Fractured cliff" then
+		owned[p] = true
+	elseif p:IsA("BasePart") and (p.Name == "Floating foundation" or p.Name == "Island underside") and p.Parent == isle then
 		-- Cylinder slot: the mesh up axis runs along the cylinder (local X).
 		local cf = p.CFrame * CFrame.Angles(0, 0, -math.pi / 2)
 		table.insert(scene.meshes, {shape = p:GetAttribute("Shape"), tint = hex(p:GetAttribute("Tint") or p.Color), cf = cfList(cf), box = {p.Size.Y, p.Size.X, p.Size.Z},
@@ -90,11 +106,11 @@ for _, p in isle:GetDescendants() do
 	end
 end
 for _, p in isle:GetDescendants() do
-	local skip = owned[p] or (p.Name == "Meadow" and p.Parent == isle and bud.grounds > 0)
+	local skip = owned[p] or (p.Name == "Meadow" and p.Parent == isle and forged)
 	if p:IsA("BasePart") and not skip and p.Transparency < 0.9 and not p:GetAttribute("BuildingType") then
 		local kind = if p.Shape == roblox.Enum.PartType.Cylinder then "cylinder" elseif p.Shape == roblox.Enum.PartType.Ball then "ball" else "box"
 		table.insert(scene.boxes, {kind = kind, cf = cfList(p.CFrame), size = {p.Size.X, p.Size.Y, p.Size.Z}, color = hex(p.Color)})
 	end
 end
 fs.writeFile(process.args[2] or "environment.json", serde.encode("json", scene))
-print(string.format("%s: %d dressing items, %d meshes, %d parts, ground %s", name, #scene.items, #scene.meshes, #scene.boxes, if scene.ground then #scene.ground.faces .. " tris" else "off"))
+print(string.format("%s: %d dressing items, %d meshes, %d parts, %d forged surfaces", name, #scene.items, #scene.meshes, #scene.boxes, #scene.surfaces))

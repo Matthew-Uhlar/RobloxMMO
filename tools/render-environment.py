@@ -97,23 +97,28 @@ def main():
     def obj(name):
         if name not in cache:
             vertices, faces, meta = icons.read_obj(name)
-            normals = icons.corner_normals(vertices, faces, meta["smooth"])
+            normals = icons.sphere_normals(vertices, faces, meta, icons.corner_normals(vertices, faces, meta["smooth"]))
             v = numpy.array(vertices)
             cache[name] = (v, faces, meta, normals, v.min(axis=0), v.max(axis=0))
         return cache[name]
+
+    colour_cache = {}
 
     def draw_mesh(name, tint_hex, place):
         v, faces, meta, normals, lo, hi = obj(name)
         tint = hex_rgb(tint_hex) if tint_hex else (hex_rgb(meta["tint"]) if meta["tint"] else None)
         shades = icons.tint_shades(tuple(tint)) if tint is not None else {}
+        key = (name, tint_hex)
+        if key not in colour_cache:
+            # §54 QC A1: the forge's per-vertex colour (family diffusion, AO, mottling).
+            colour_cache[key] = icons.vertex_colours([tuple(p) for p in v], faces, meta, lambda m: shades.get(m) or palette[m])
+        corner_colours = colour_cache[key]
         world, rot = place(v, lo, hi)
         for index, (ids, material) in enumerate(faces):
-            colour = numpy.array(shades.get(material) or palette[material])
             ns = [rot @ numpy.array(n) for n in normals[index]]
-            draw([world[i] for i in ids], [colour] * 3, ns)
+            draw([world[i] for i in ids], [numpy.array(c) for c in corner_colours[index]], ns)
 
-    if scene.get("ground"):
-        g = scene["ground"]
+    for g in scene.get("surfaces", []):
         verts = numpy.array(g["vertices"])
         cols = [numpy.array(c) for c in g["colors"]]
         nors = [numpy.array(n) for n in g["normals"]]

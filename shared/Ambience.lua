@@ -203,6 +203,11 @@ A.SWAY = {
 	BroadleafTree = {mode = "tree", amp = 0.02, freq = 0.32}, BlossomTree = {mode = "tree", amp = 0.022, freq = 0.34},
 	WillowTree = {mode = "tree", amp = 0.03, freq = 0.3}, SpirePine = {mode = "tree", amp = 0.018, freq = 0.3},
 	VineCurtain = {mode = "lantern", amp = 0.04, freq = 0.5}, HangingRoots = {mode = "lantern", amp = 0.03, freq = 0.45},
+	SnowPine = {mode = "tree", amp = 0.016, freq = 0.3},
+	-- Far LODs sway like their near shapes.
+	BroadleafTreeFar = {mode = "tree", amp = 0.02, freq = 0.32}, BlossomTreeFar = {mode = "tree", amp = 0.022, freq = 0.34},
+	WillowTreeFar = {mode = "tree", amp = 0.03, freq = 0.3}, SpirePineFar = {mode = "tree", amp = 0.018, freq = 0.3},
+	SnowPineFar = {mode = "tree", amp = 0.016, freq = 0.3},
 }
 -- Only the forge's local MeshPart clones sway (QC M1): server parts (herb
 -- tufts, colliders) are never moved. A host tagged NO_SWAY_TAG, carrying
