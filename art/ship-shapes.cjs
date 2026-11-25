@@ -256,7 +256,31 @@ module.exports = ({ world, C, PI, hash }) => {
   // Sky reef: a floating cluster of rock with coral fans, tube coral and
   // glowing anemone tips (TINT) clinging to it. Uniform fit 16 x 9 x 14.
   // -------------------------------------------------------------------------
-  world('SkyReef', { smooth: 34, tint: '4FC3B0', kind: 'rock', range: 1400 }, kit => {
+
+  // -------------------------------------------------------------------------
+  // Sky wreck: the broken fore half of a hull, listing, with snapped ribs, a
+  // splintered mast and a torn pennant. Uniform fit 10 x 7 x 24.
+  // -------------------------------------------------------------------------
+
+  // -------------------------------------------------------------------------
+  // Chart buoy (landmarks): a floating brass buoy with a striped float, a
+  // lantern cage on a mast and a wind vane. Uniform fit 4 x 10 x 4.
+  // -------------------------------------------------------------------------
+  world('ChartBuoy', { smooth: 32, tint: 'C9A24E', kind: 'tower', range: 1400 }, kit => {
+    kit.lathe([[0, 0], [1.2, .6], [1.9, 1.8], [2.0, 2.8], [1.7, 3.6], [1.0, 4.0], [.5, 4.1]], { n: 16, capEnd: true,
+      color: l => l === 2 || l === 4 ? C.CRIMSON : l === 3 ? C.CLOTH : C.BRASS, capColor: C.BRASS });
+    kit.ring(2.02, .14, .14, C.IRON, 24, PI / 2, 0, PI * 2, 2.8);
+    kit.lathe([[.18, 4.0], [.16, 7.6], [.12, 8.0]], { n: 8, capEnd: true, color: C.IRON });
+    kit.lathe([[.5, 7.6], [.56, 7.7], [.5, 8.8], [.3, 9.2], [0, 9.4]], { n: 10, color: l => l === 1 ? C.FLAME : C.BRASS });
+    for (let k = 0; k < 4; k++) { const a = k * PI / 2; kit.box(Math.cos(a) * .52, 8.25, Math.sin(a) * .52, .06, 1.1, .06, C.IRON) }
+    kit.tube([[0, 9.5, 0], [0, 10, 0]], .03, { n: 3, color: C.IRON });
+    kit.prism([[0, 9.8], [1.0, 9.9], [.9, 9.6]], .03, TINT, TINT_DARK);
+    for (let k = 0; k < 3; k++) { const a = k * 2 * PI / 3 + .4; kit.tube([[Math.cos(a) * 1.6, .9, Math.sin(a) * 1.6], [Math.cos(a) * 1.2, -1.2, Math.sin(a) * 1.2]], [.12, .04], { n: 4, color: C.MOSS }) }
+  });
+
+  // §55: kept at their §51 build (organic baseline): the re-authored versions
+  // exceeded the 4095-vertex packing limit.
+  world('SkyReef', { legacy: true, smooth: 34, tint: '4FC3B0', kind: 'rock', range: 1400 }, kit => {
     kit.blob(0, 0, 0, 6.4, 3.4, 5.4, { sub: 2, color: C.STONE, seed: 61, amount: .14, squash: .7 });
     kit.blob(-3.8, 1.4, 1.6, 2.6, 1.8, 2.4, { sub: 1, color: C.STONE, seed: 62, amount: .16 });
     kit.blob(3.4, -.4, -2.2, 2.2, 1.6, 2.0, { sub: 1, color: C.STONE_DARK, seed: 63, amount: .18 });
@@ -273,12 +297,7 @@ module.exports = ({ world, C, PI, hash }) => {
     }
     for (let k = 0; k < 4; k++) kit.tube([[-2 + k * 1.3, -2.6, .5], [-2.2 + k * 1.3, -4.2 - hash(k, 7, 66) * 1.5, .8]], [.18, .04], { n: 5, color: C.MOSS });
   });
-
-  // -------------------------------------------------------------------------
-  // Sky wreck: the broken fore half of a hull, listing, with snapped ribs, a
-  // splintered mast and a torn pennant. Uniform fit 10 x 7 x 24.
-  // -------------------------------------------------------------------------
-  world('SkyWreck', { smooth: 32, tint: '6E4A30', kind: 'rock', range: 1400 }, kit => {
+  world('SkyWreck', { legacy: true, smooth: 32, tint: '6E4A30', kind: 'rock', range: 1400 }, kit => {
     kit.group({ rot: [0, 0, .28] }, () => {
       const N = 8, sections = [];
       for (let s = 0; s <= N; s++) {
@@ -299,21 +318,5 @@ module.exports = ({ world, C, PI, hash }) => {
       kit.jewel(-2.4, 4.6, -6, .4, .3, .4, C.BRASS);
       kit.jewel(2.0, 4.4, -2, .32, .26, .32, C.IRON);
     });
-  });
-
-  // -------------------------------------------------------------------------
-  // Chart buoy (landmarks): a floating brass buoy with a striped float, a
-  // lantern cage on a mast and a wind vane. Uniform fit 4 x 10 x 4.
-  // -------------------------------------------------------------------------
-  world('ChartBuoy', { smooth: 32, tint: 'C9A24E', kind: 'tower', range: 1400 }, kit => {
-    kit.lathe([[0, 0], [1.2, .6], [1.9, 1.8], [2.0, 2.8], [1.7, 3.6], [1.0, 4.0], [.5, 4.1]], { n: 16, capEnd: true,
-      color: l => l === 2 || l === 4 ? C.CRIMSON : l === 3 ? C.CLOTH : C.BRASS, capColor: C.BRASS });
-    kit.ring(2.02, .14, .14, C.IRON, 24, PI / 2, 0, PI * 2, 2.8);
-    kit.lathe([[.18, 4.0], [.16, 7.6], [.12, 8.0]], { n: 8, capEnd: true, color: C.IRON });
-    kit.lathe([[.5, 7.6], [.56, 7.7], [.5, 8.8], [.3, 9.2], [0, 9.4]], { n: 10, color: l => l === 1 ? C.FLAME : C.BRASS });
-    for (let k = 0; k < 4; k++) { const a = k * PI / 2; kit.box(Math.cos(a) * .52, 8.25, Math.sin(a) * .52, .06, 1.1, .06, C.IRON) }
-    kit.tube([[0, 9.5, 0], [0, 10, 0]], .03, { n: 3, color: C.IRON });
-    kit.prism([[0, 9.8], [1.0, 9.9], [.9, 9.6]], .03, TINT, TINT_DARK);
-    for (let k = 0; k < 3; k++) { const a = k * 2 * PI / 3 + .4; kit.tube([[Math.cos(a) * 1.6, .9, Math.sin(a) * 1.6], [Math.cos(a) * 1.2, -1.2, Math.sin(a) * 1.2]], [.12, .04], { n: 4, color: C.MOSS }) }
   });
 };

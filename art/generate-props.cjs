@@ -4,6 +4,11 @@
 // embedded copy inside mesh.client.lua. The import bundle must be regenerated
 // afterwards so art/import stays in parity with every OBJ (the build verifies it).
 const fs = require('fs');
+const OK = require('./organic-kit.cjs');
+// §55: organic profiles and paths turn at most this much per level.
+const ORGANIC_TURN = 10 * Math.PI / 180;
+// World kinds held to the organic bar (hulls are checked at real scale instead).
+const ORGANIC_WORLD_KINDS = new Set(['tree', 'rock', 'ore', 'crop', 'plant', 'node']);
 // Palette indices are 1-based in Lua. 1-10 are the original world shades.
 // 11 is the TINT slot: the UI (and tinted world props) recolour these faces with
 // the item's AetherData colour; its stored value is a neutral silver so untinted
@@ -36,12 +41,17 @@ const WORLD_TRIANGLE_RANGE = [200, 1500];
 // World Art pass 2 (§40): whole buildings and furnished interiors are single meshes.
 // Travel beacon shapes (§44, meta exactTint) share the range: >= 24-segment lathes.
 const BUILDING_TRIANGLE_RANGE = [200, 2400];
+// §55: organic world shapes (trees, rocks, ores, crops, plants, nodes) meet the
+// strict organic bar within 4k triangles (QC H2: phones); each has a far LOD
+// (meta.lod 'far', <Name>Far) of at most 1.2k held to the far bar below.
+const ORGANIC_WORLD_RANGE = [200, 4000], ORGANIC_FAR_RANGE = [200, 1200];
 // §48 creatures: cores (creature / pet) and the shared limbs and tier overlays.
 const CREATURE_TRIANGLE_RANGE = {creature: [400, 2400], pet: [400, 1600], limb: [100, 1600], overlay: [200, 2600]};
 // Cores worn by slayer / lair / raid / world bosses use the budget (QC H4).
 const BOSS_CORE_FLOOR = 1800;
 // §52 NPC outfits: hats, hoods, aprons, cloaks and trade props (their own catalog).
-const OUTFIT_TRIANGLE_RANGE = [150, 1600];
+// §55: the re-authored smooth outfits (filleted brims, stadium cloth, rounded caps) cost ~2-3.6k.
+const OUTFIT_TRIANGLE_RANGE = [150, 4000];
 const outfitShapes = {};
 const outfitMeta = {};
 const shapes = {};
@@ -74,6 +84,9 @@ function shape(name, build, store = shapes, precision = 10000, organic = false) 
   };
   const tri=(a,b,c,color)=>faces.push([a,b,c,color]);
   const quad=(a,b,c,d,color)=>{tri(a,b,c,color);tri(a,c,d,color)};
+  // §55: organic bands alternate their diagonal per column (zigzag), so every
+  // ring vertex touches the same triangle area on both sides (unbiased normals).
+  const zz=(i,a,b,c,d,color)=>organic&&i%2?quad(b,c,d,a,color):quad(a,b,c,d,color);
   const P=i=>vertices[i-1];
   const sub3=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
   const cross3=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
@@ -167,15 +180,34 @@ function shape(name, build, store = shapes, precision = 10000, organic = false) 
   // radius 0 makes a pole. color may be a function (band, segment) -> shade.
   // jitter(level, segment) scales radii for hand-cut, irregular silhouettes.
   // wobble(level, segment) -> [dx,dz] offsets a vertex sideways (droop, lean).
-  function lathe(profile,{n=8,sx=1,sz=1,phase=0,color=TINT,capStart=false,capEnd=false,capColor,jitter,wobble,lift,even=false}={}) {
+  // §55 organic shapes: the profile is faired (centripetal Catmull-Rom, <= turn
+  // radians per level; callbacks see the source level, numeric ones
+  // interpolated) and a flat cap gets a rounded rim (a Bezier corner inside the
+  // profile's own extent, so bounds never move).
+  function lathe(profile,{n=8,sx=1,sz=1,phase=0,color=TINT,capStart=false,capEnd=false,capColor,jitter,wobble,lift,even=false,turn=ORGANIC_TURN,bevel=.32,capSteps=5}={}) {
     // §54 QC A2-A4: organic catalogs get >= 16 segments, spread by normal angle.
-    if(organic){n=Math.max(n,16);even=true}
-    const shade=typeof color==='function'?color:()=>color;
+    let src=profile.map((_,i)=>i);
+    if(organic){
+      n=Math.max(n,16);even=true;
+      const f=OK.fair(profile,turn);profile=f.points;src=f.src;
+      const corner=(at,toward,sign)=>{
+        const P=profile[at],Q=profile[toward],d=[Q[0]-P[0],Q[1]-P[1]],l=Math.hypot(...d)||1;
+        if(P[0]*bevel<.006)return null;
+        const b=Math.min(P[0]*bevel,l*.45),A=[P[0]-b,P[1]],D=[P[0]+d[0]/l*b,P[1]+d[1]/l*b],pts=[];
+        const phi=Math.acos(Math.max(-1,Math.min(1,d[0]/l)));for(let k=0;k<=capSteps;k++){const t=OK.cornerT(k,capSteps,phi),u=1-t;pts.push([u*u*A[0]+2*u*t*P[0]+t*t*D[0],u*u*A[1]+2*u*t*P[1]+t*t*D[1]])}
+        return sign<0?pts:pts.reverse();
+      };
+      if(capStart&&profile.length>1){const c=corner(0,1,-1);if(c){profile=[...c,...profile.slice(1)];src=[...c.map(()=>0),...src.slice(1)]}}
+      if(capEnd&&profile.length>1){const L=profile.length-1,c=corner(L,L-1,1);if(c){profile=[...profile.slice(0,L),...c];src=[...src.slice(0,L),...c.map(()=>src[L])]}}
+    }
+    const at=(fn,level,i)=>{const s0=src[level]??level;const a=Math.floor(s0+1e-9),t=s0-a;if(t<1e-9)return fn(a,i);const p=fn(a,i),q=fn(a+1,i);return Array.isArray(p)?p.map((x,k)=>x+(q[k]-x)*t):p+(q-p)*t};
+    const shadeFn=typeof color==='function'?color:()=>color;
+    const shade=(level,i,c)=>level<0||level>=profile.length?shadeFn(level<0?-1:src[src.length-1]+1,i,c):shadeFn(Math.floor((src[level]+src[Math.min(level+1,src.length-1)])/2+1e-9),i,c);
     // Local (pre-transform) points: colour callbacks get shade(level, segment, faceCentre).
     const local=profile.map(([r,y],level)=>r===0?[0,y,0]:Array.from({length:n},(_,i)=>{
       // even: spread the ring by normal angle (an elliptic section then turns its normal by 2pi/n per segment, so flat
       // blades and fronds never fold at their thin edges).
-      const f=phase+i*2*Math.PI/n,a=even&&sx!==sz?Math.atan2(sz*Math.sin(f),sx*Math.cos(f)):f,k=jitter?jitter(level,i):1,[dx,dz]=wobble?wobble(level,i):[0,0],dy=lift?lift(level,i):0;
+      const f=phase+i*2*Math.PI/n,a=even&&sx!==sz?Math.atan2(sz*Math.sin(f),sx*Math.cos(f)):f,k=jitter?at(jitter,level,i):1,[dx,dz]=wobble?at(wobble,level,i):[0,0],dy=lift?at(lift,level,i):0;
       return [Math.cos(a)*r*sx*k+dx,y+dy,Math.sin(a)*r*sz*k+dz];
     }));
     const rings=local.map(pts=>Array.isArray(pts[0])?pts.map(p=>v(p)):v(pts));
@@ -186,15 +218,17 @@ function shape(name, build, store = shapes, precision = 10000, organic = false) 
         const j=(i+1)%n;
         const centre=Array.isArray(lo)&&Array.isArray(hi)?mid(plo[i],plo[j],phi[j],phi[i]):Array.isArray(hi)?mid(plo,phi[j],phi[i]):mid(plo[i],plo[j],phi);
         const c=shade(level,i,centre);
-        if(Array.isArray(lo)&&Array.isArray(hi))quad(lo[i],lo[j],hi[j],hi[i],c);
+        if(Array.isArray(lo)&&Array.isArray(hi))(organic&&(i+level)%2?quad(lo[j],hi[j],hi[i],lo[i],c):quad(lo[i],lo[j],hi[j],hi[i],c));
         else if(Array.isArray(hi))tri(lo,hi[j],hi[i],c);
         else if(Array.isArray(lo))tri(lo[i],lo[j],hi,c);
       }
     }
     const first=rings[0],last=rings[rings.length-1];
     const capMid=pts=>Array.isArray(pts[0])?mid(...pts):pts;
-    if(capStart&&Array.isArray(first))for(let i=1;i<n-1;i++)tri(first[0],first[i+1],first[i],capColor??shade(-1,i,capMid(local[0])));
-    if(capEnd&&Array.isArray(last))for(let i=1;i<n-1;i++)tri(last[0],last[i],last[i+1],capColor??shade(profile.length,i,capMid(local[local.length-1])));
+    let ringR=0;for(const pts of local)if(Array.isArray(pts[0])){const c=mid(...pts);for(const p of pts)ringR=Math.max(ringR,Math.hypot(p[0]-c[0],p[1]-c[1],p[2]-c[2]))}
+    if(capStart&&Array.isArray(first)){if(organic){const c=v(capMid(local[0]));for(let i=0;i<n;i++)tri(c,first[(i+1)%n],first[i],capColor??shade(-1,i,capMid(local[0])))}else for(let i=1;i<n-1;i++)tri(first[0],first[i+1],first[i],capColor??shade(-1,i,capMid(local[0])))}
+    if(capEnd&&Array.isArray(last)){if(organic){const c=v(capMid(local[local.length-1]));for(let i=0;i<n;i++)tri(c,last[i],last[(i+1)%n],capColor??shade(profile.length,i,capMid(local[local.length-1])))}else for(let i=1;i<n-1;i++)tri(last[0],last[i],last[i+1],capColor??shade(profile.length,i,capMid(local[local.length-1])))}
+    return {ringRadius:ringR};
   }
   // Extruded outline in the local XY plane (front face toward -Z). The outline
   // must be star-shaped about its centroid; caps are fanned from that centre.
@@ -217,7 +251,7 @@ function shape(name, build, store = shapes, precision = 10000, organic = false) 
   // displace(unitDir) -> radius multiplier: a continuous field (smooth noise),
   // unlike `amount`, which jitters each vertex on its own.
   function blob(x,y,z,rx,ry,rz,{sub=1,color=TINT,seed=0,amount=0,squash,displace,soft=false}={}) {
-    if(organic)sub=Math.max(sub,2);
+    if(organic){sub=Math.max(sub,2);if(amount&&!displace){const a=amount*.9,sd=seed*7+sub;displace=p=>1+a*OK.fbm(p,1.4,sd,3)}amount=0}
     const t=(1+Math.sqrt(5))/2;
     const pts=[[-1,t,0],[1,t,0],[-1,-t,0],[1,-t,0],[0,-1,t],[0,1,t],[0,-1,-t],[0,1,-t],[t,0,-1],[t,0,1],[-t,0,-1],[-t,0,1]].map(p=>{const l=Math.hypot(...p);return p.map(c=>c/l)});
     let tris=[[0,11,5],[0,5,1],[0,1,7],[0,7,10],[0,10,11],[1,5,9],[5,11,4],[11,10,2],[10,7,6],[7,1,8],[3,9,4],[3,4,2],[3,2,6],[3,6,8],[3,8,9],[4,9,5],[2,4,11],[6,2,10],[8,6,7],[9,8,1]];
@@ -235,38 +269,110 @@ function shape(name, build, store = shapes, precision = 10000, organic = false) 
       const m=[0,1,2].map(k=>(local[a][k]+local[b][k]+local[c][k])/3);
       tri(ids[a],ids[b],ids[c],shade(n.map(q=>q/l*(dot3(n,m)<0?-1:1)),m,index));
     });
+    return {ringRadius:Math.max(rx,ry,rz)*(1+(amount||0)+(displace?.15:0))};
   }
   // Swept tube along a polyline with parallel-transport frames.
-  function tube(points,radii,{n=6,color=TINT,capStart=true,capEnd=true,capColor,jitter}={}) {
-    if(organic)n=Math.max(n,16);
-    const shade=typeof color==='function'?color:()=>color;
+  // §55 organic shapes: the path (with its radius) is faired and flat end caps
+  // get a rounded rim inside the tube's own length.
+  function tube(points,radii,{n=6,color=TINT,capStart=true,capEnd=true,capColor,jitter,turn=ORGANIC_TURN,bevel=.38,closed=false,capSteps=5}={}) {
+    if(closed){capStart=false;capEnd=false}
+    const shadeFn=typeof color==='function'?color:()=>color;
+    let rad=points.map((_,i)=>typeof radii==='function'?radii(i):Array.isArray(radii)?radii[i]:radii),src=points.map((_,i)=>i);
+    if(organic){
+      n=Math.max(n,16);
+      const f=closed?{points:points.map((p,i)=>[...p,rad[i]]),src:points.map((_,i)=>i)}:OK.fair(points.map((p,i)=>[...p,rad[i]]),turn,{dims:4});
+      points=f.points.map(p=>p.slice(0,3));rad=f.points.map(p=>Math.max(p[3],.004));src=f.src;
+      // Rounded rim: rings from (end, r - b) out to (end + b along the tube, r).
+      const corner=(at,toward)=>{
+        const P=points[at],Q=points[toward],d=Q.map((x,q)=>x-P[q]),l=Math.hypot(...d)||1,r=rad[at],b=Math.min(r*bevel,l*.45),pts=[];
+        for(let k=0;k<=capSteps;k++){const t=OK.cornerT(k,capSteps),u=1-t;pts.push([P.map((x,q)=>x+d[q]/l*t*t*b),u*u*(r-b)+(1-u*u)*r])}
+        return pts;
+      };
+      // Thin ends (bevel under 1.5 cm) close with a small dome beyond the end instead.
+      const domeAt=(at,toward)=>{const P=points[at],Q=points[toward],d=P.map((x,q)=>x-Q[q]),l=Math.hypot(...d)||1,r=rad[at],out=[];for(const a of [PI/10,PI/5,PI*.3,PI*.4])out.push([P.map((x,q)=>x+d[q]/l*r*Math.sin(a)),Math.max(r*Math.cos(a),.004)]);return out};
+      if(capStart&&points.length>1&&rad[0]*bevel<.015&&rad[0]>.008){const c=domeAt(0,1).reverse();points=[...c.map(x=>x[0]),...points];rad=[...c.map(x=>x[1]),...rad];src=[...c.map(()=>0),...src]}
+      if(capEnd&&points.length>1&&rad[rad.length-1]*bevel<.015&&rad[rad.length-1]>.008){const L=points.length-1,c=domeAt(L,L-1);points=[...points,...c.map(x=>x[0])];rad=[...rad,...c.map(x=>x[1])];src=[...src,...c.map(()=>src[L])]}
+      if(capStart&&points.length>1&&rad[0]*bevel>=.015){const c=corner(0,1);points=[...c.map(x=>x[0]),...points.slice(1)];rad=[...c.map(x=>x[1]),...rad.slice(1)];src=[...c.map(()=>0),...src.slice(1)]}
+      if(capEnd&&points.length>1&&rad[rad.length-1]*bevel>=.015&&!(rad[rad.length-1]<.01)){const L=points.length-1,c=corner(L,L-1).reverse();points=[...points.slice(0,L),...c.map(x=>x[0])];rad=[...rad.slice(0,L),...c.map(x=>x[1])];src=[...src.slice(0,L),...c.map(()=>src[L])]}
+    }
+    const lvl=i=>Math.floor(src[Math.max(0,Math.min(src.length-1,i))]+1e-9);
+    const shade=(i,k,c)=>i<0?shadeFn(-1,k,c):i>=points.length?shadeFn(lvl(points.length-1)+1,k,c):shadeFn(Math.floor((src[i]+src[Math.min(i+1,src.length-1)])/2+1e-9),k,c);
     const norm=a=>{const l=Math.hypot(...a)||1;return a.map(c=>c/l)};
-    const tangents=points.map((p,i)=>norm(sub3(points[Math.min(i+1,points.length-1)],points[Math.max(i-1,0)])));
+    const NP=points.length,tangents=points.map((p,i)=>norm(sub3(points[closed?(i+1)%NP:Math.min(i+1,NP-1)],points[closed?(i-1+NP)%NP:Math.max(i-1,0)])));
     let nrm=Math.abs(tangents[0][1])<.9?[0,1,0]:[1,0,0];
     const rings=points.map((p,i)=>{
       const tt=tangents[i];
       nrm=norm(sub3(nrm,tt.map(c=>c*dot3(nrm,tt))));
-      const bin=cross3(tt,nrm),r=typeof radii==='function'?radii(i):Array.isArray(radii)?radii[i]:radii;
-      return Array.from({length:n},(_,k)=>{const a=k*2*Math.PI/n,j=jitter?jitter(i,k):1;return p.map((c,q)=>c+(Math.cos(a)*nrm[q]+Math.sin(a)*bin[q])*r*j)});
+      const bin=cross3(tt,nrm),r=rad[i];
+      return Array.from({length:n},(_,k)=>{const a=k*2*Math.PI/n,j=jitter?jitter(lvl(i),k):1;return p.map((c,q)=>c+(Math.cos(a)*nrm[q]+Math.sin(a)*bin[q])*r*j)});
     }).map(ring=>ring.map(p=>({p,id:v(p)})));
     const centre=(a,b,c,d)=>[0,1,2].map(q=>(a.p[q]+b.p[q]+c.p[q]+d.p[q])/4);
-    for(let i=0;i<rings.length-1;i++)for(let k=0;k<n;k++){const j=(k+1)%n;quad(rings[i][k].id,rings[i][j].id,rings[i+1][j].id,rings[i+1][k].id,shade(i,k,centre(rings[i][k],rings[i][j],rings[i+1][j],rings[i+1][k])))}
+    if(closed){
+      // Close the loop: the last ring joins the first, matched by the nearest rotation.
+      const A=rings[rings.length-1],B=rings[0];let best=0,bd=Infinity;
+      for(let o=0;o<n;o++){let d=0;for(let k=0;k<n;k++){const p=A[k].p,q=B[(k+o)%n].p;d+=(p[0]-q[0])**2+(p[1]-q[1])**2+(p[2]-q[2])**2}if(d<bd){bd=d;best=o}}
+      rings.push(B.map((_,k)=>B[(k+best)%n]));
+    }
+    for(let i=0;i<rings.length-1;i++)for(let k=0;k<n;k++){const j=(k+1)%n;zz(k+i,rings[i][k].id,rings[i][j].id,rings[i+1][j].id,rings[i+1][k].id,shade(i,k,centre(rings[i][k],rings[i][j],rings[i+1][j],rings[i+1][k])))}
     const first=rings[0].map(x=>x.id),last=rings[rings.length-1].map(x=>x.id);
     const ringMid=ring=>[0,1,2].map(q=>ring.reduce((t,x)=>t+x.p[q],0)/ring.length);
-    if(capStart)for(let k=1;k<n-1;k++)tri(first[0],first[k+1],first[k],capColor??shade(-1,k,ringMid(rings[0])));
-    if(capEnd)for(let k=1;k<n-1;k++)tri(last[0],last[k],last[k+1],capColor??shade(rings.length,k,ringMid(rings[rings.length-1])));
+    if(capStart){if(organic){const c=v(ringMid(rings[0]));for(let k=0;k<n;k++)tri(c,first[(k+1)%n],first[k],capColor??shade(-1,k,ringMid(rings[0])))}else for(let k=1;k<n-1;k++)tri(first[0],first[k+1],first[k],capColor??shade(-1,k,ringMid(rings[0])))}
+    if(capEnd){const R=rings[rings.length-1];if(organic){const c=v(ringMid(R));for(let k=0;k<n;k++)tri(c,last[k],last[(k+1)%n],capColor??shade(rings.length,k,ringMid(R)))}else for(let k=1;k<n-1;k++)tri(last[0],last[k],last[k+1],capColor??shade(rings.length,k,ringMid(R)))}
+    return {ringRadius:Math.max(...rad)*(jitter?1.2:1)};
   }
   // Lofted solid through closed cross-sections [{z, points:[[x,y],...]}] (equal
   // point counts, local XY at each z). color(section, edge) -> shade. The end
   // sections are fanned from their centroids, so keep them star-shaped.
-  function loft(sections,{color=TINT,capStart=true,capEnd=true,capColor}={}) {
-    const shade=typeof color==='function'?color:()=>color;
+  // §55 organic shapes: a capped end gets a rounded rim (the end section is
+  // pulled in and shrunk through a Bezier corner inside the loft's own length).
+  function loft(sections,{color=TINT,capStart=true,capEnd=true,capColor,bevel=.8,turn=ORGANIC_TURN,capSteps=5}={}) {
+    const shadeFn=typeof color==='function'?color:()=>color;
+    let srcS=sections.map((_,i)=>i);
+    if(organic&&sections.length>2){
+      // Fair every point track across the sections (uniform Catmull-Rom with
+      // one step count per span, from the worst track's turn).
+      const m=sections[0].points.length,N=sections.length,P3=(s,k)=>[sections[s].points[k][0],sections[s].points[k][1],sections[s].z];
+      const turnAt=(s,k)=>{if(s<=0||s>=N-1)return 0;const a=P3(s-1,k),b=P3(s,k),c=P3(s+1,k),u=sub3(b,a),w=sub3(c,b),lu=Math.hypot(...u),lw=Math.hypot(...w);return lu<1e-9||lw<1e-9?0:Math.acos(Math.max(-1,Math.min(1,dot3(u,w)/lu/lw)))};
+      const out=[sections[0]],src=[0];
+      for(let s=0;s<N-1;s++){
+        let worst=0;for(let k=0;k<m;k++)worst=Math.max(worst,turnAt(s,k),turnAt(s+1,k));
+        const steps=Math.max(1,Math.min(8,Math.ceil(worst/turn)));
+        for(let q=1;q<=steps;q++){
+          const t=q/steps,t2=t*t,t3=t2*t;
+          const cr=(a,b,c,d)=>.5*(2*b+(-a+c)*t+(2*a-5*b+4*c-d)*t2+(-a+3*b-3*c+d)*t3);
+          const pick=i=>sections[Math.max(0,Math.min(N-1,i))];
+          const z=q===steps?sections[s+1].z:cr(pick(s-1).z,pick(s).z,pick(s+1).z,pick(s+2).z);
+          const pts=q===steps?sections[s+1].points:sections[s].points.map((_,k)=>[0,1].map(c=>cr(pick(s-1).points[k][c],pick(s).points[k][c],pick(s+1).points[k][c],pick(s+2).points[k][c])));
+          out.push({z,points:pts});src.push(s+t);
+        }
+      }
+      sections=out;srcS=src.map(x=>Math.floor(x+1e-9));
+    }
+    if(organic&&sections.length>1){
+      const corner=(at,toward)=>{
+        const S=sections[at],T=sections[toward],m=S.points.length,dz=T.z-S.z;
+        const cx=S.points.reduce((t,p)=>t+p[0],0)/m,cy=S.points.reduce((t,p)=>t+p[1],0)/m;
+        const xs=S.points.map(p=>p[0]),ys=S.points.map(p=>p[1]),e=Math.min(Math.max(...xs)-Math.min(...xs),Math.max(...ys)-Math.min(...ys))/2;
+        const b=Math.min(Math.abs(dz)*.45,e*bevel),dir=Math.sign(dz)||1,out=[];if(b<.012)return null;
+        const hx=Math.max(...xs.map(x=>Math.abs(x-cx))),hy=Math.max(...ys.map(y=>Math.abs(y-cy))),kx=Math.max(.3,1-b/Math.max(hx,1e-9)),ky=Math.max(.3,1-b/Math.max(hy,1e-9));
+        for(let k=0;k<=capSteps;k++){const t=OK.cornerT(k,capSteps),u=1-t;out.push({z:S.z+dir*b*t*t,points:S.points.map(([x,y])=>{const ax=cx+(x-cx)*kx,ay=cy+(y-cy)*ky;return [u*u*ax+(1-u*u)*x,u*u*ay+(1-u*u)*y]})})}
+        return out;
+      };
+      if(capStart){const c=corner(0,1);if(c){sections=[...c,...sections.slice(1)];srcS=[...c.map(()=>0),...srcS.slice(1)]}}
+      if(capEnd){const L=sections.length-1,c=corner(L,L-1);if(c){c.reverse();sections=[...sections.slice(0,L),...c];srcS=[...srcS.slice(0,L),...c.map(()=>srcS[L])]}}
+    }
+    const shade=(s,i)=>s<0?shadeFn(-1,i):s>=sections.length?shadeFn(srcS[srcS.length-1]+1,i):shadeFn(srcS[s],i);
     const rings=sections.map(({z,points})=>points.map(([x,y])=>v([x,y,z])));
     const m=sections[0].points.length;
-    for(let s=0;s<rings.length-1;s++)for(let i=0;i<m;i++){const j=(i+1)%m;quad(rings[s][i],rings[s][j],rings[s+1][j],rings[s+1][i],shade(s,i))}
+    for(let s=0;s<rings.length-1;s++)for(let i=0;i<m;i++){const j=(i+1)%m;zz(i+s,rings[s][i],rings[s][j],rings[s+1][j],rings[s+1][i],shade(s,i))}
     const centre=s=>{const pts=sections[s].points;return v([pts.reduce((t,p)=>t+p[0],0)/m,pts.reduce((t,p)=>t+p[1],0)/m,sections[s].z])};
-    if(capStart){const c=centre(0);for(let i=0;i<m;i++)tri(c,rings[0][(i+1)%m],rings[0][i],capColor??shade(-1,i))}
-    if(capEnd){const last=rings.length-1,c=centre(last);for(let i=0;i<m;i++)tri(c,rings[last][i],rings[last][(i+1)%m],capColor??shade(rings.length,i))}
+    // §55: organic caps zip across the section (no centre vertex, which a thin section can graze).
+    const zip=(ring,flip,col)=>{const pt=q=>vertices[ring[q]-1],area=(a,b,c)=>Math.hypot(...cross3(sub3(pt(b),pt(a)),sub3(pt(c),pt(a))));let l=0,r=m-1,side=0;
+      while(r-l>=2){const A=[l,l+1,r],B=[l,r-1,r],aA=area(...A),aB=area(...B);let t=side?B:A;if((side?aB:aA)<1e-5)t=side?A:B;const useB=t===B;if(area(...t)>=1e-5){const [a,b,c]=t.map(q=>ring[q]);flip?tri(c,b,a,col(t[0])):tri(a,b,c,col(t[0]))}if(useB)r--;else l++;side^=1}};
+    if(capStart){if(organic)zip(rings[0],true,i=>capColor??shade(-1,i));else{const c=centre(0);for(let i=0;i<m;i++)tri(c,rings[0][(i+1)%m],rings[0][i],capColor??shade(-1,i))}}
+    if(capEnd){const last=rings.length-1;if(organic)zip(rings[last],false,i=>capColor??shade(rings.length,i));else{const c=centre(last);for(let i=0;i<m;i++)tri(c,rings[last][i],rings[last][(i+1)%m],capColor??shade(rings.length,i))}}
+    let ringR=0;for(const {points} of sections){const cx=points.reduce((t,p)=>t+p[0],0)/m,cy=points.reduce((t,p)=>t+p[1],0)/m;for(const p of points)ringR=Math.max(ringR,Math.hypot(p[0]-cx,p[1]-cy))}
+    return {ringRadius:ringR};
   }
   // Call log (§54 QC A4): every primitive call with its segment count / subdivision
   // and the radius of what it added (shape space), so tests can check the
@@ -277,8 +383,16 @@ function shape(name, build, store = shapes, precision = 10000, organic = false) 
     const opts=args.find(a=>a&&typeof a==='object'&&!Array.isArray(a))||{};
     const lo=[Infinity,Infinity,Infinity],hi=[-Infinity,-Infinity,-Infinity];
     for(let i=before;i<vertices.length;i++)for(let k=0;k<3;k++){lo[k]=Math.min(lo[k],vertices[i][k]);hi[k]=Math.max(hi[k],vertices[i][k])}
-    const radius=vertices.length>before?Math.max(hi[0]-lo[0],hi[2]-lo[2],prim==='blob'?hi[1]-lo[1]:0)/2:0;
-    calls.push({f0,f1:faces.length,prim,n:prim==='lathe'?(opts.n??8):prim==='tube'?(opts.n??6):undefined,sub:prim==='blob'?(opts.sub??1):undefined,radius:Math.round(radius*1000)/1000});
+    let radius=vertices.length>before?Math.max(hi[0]-lo[0],hi[2]-lo[2],prim==='blob'?hi[1]-lo[1]:0)/2:0;
+    // §55: organic shapes log the primitive's own largest ring radius (scaled by
+    // the group stack), not its bounding box: a lathe moved by `wobble` or a
+    // closed tube loop is judged by its rings.
+    if(organic&&r&&typeof r.ringRadius==='number'){
+      const T=p=>{for(let i=stack.length-1;i>=0;i--)p=stack[i](p);return p},o=T([0,0,0]);
+      const k=Math.max(...[[1,0,0],[0,1,0],[0,0,1]].map(e=>Math.hypot(...T(e).map((x,q)=>x-o[q]))));
+      radius=Math.min(radius,r.ringRadius*k);
+    }
+    calls.push({f0,f1:faces.length,prim,n:prim==='lathe'||prim==='tube'?Math.max(opts.n??(prim==='lathe'?8:6),organic?16:0):prim==='loft'?args[0][0].points.length:undefined,sub:prim==='blob'?Math.max(opts.sub??1,organic?2:0):undefined,radius:Math.round(radius*1000)/1000});
     return r;
   };
   build({loft:logged('loft',solid(loft)),box:logged('box',convex(box)),bevelBox:logged('bevelBox',convex(bevelBox)),spindle:logged('spindle',convex(spindle)),jewel:logged('jewel',convex(jewel)),ring:logged('ring',solid(ring)),lathe:logged('lathe',solid(lathe)),prism:logged('prism',solid(prism)),
@@ -587,19 +701,32 @@ shape('OreCluster',({lathe,group})=>{
 // ---------------------------------------------------------------------------
 function world(name,meta,build){
   if(shapes[name]||worldShapes[name])throw new Error(`Duplicate shape name ${name}`);
-  shape(name,build,worldShapes,1000);worldMeta[name]=meta;
+  const organic=ORGANIC_WORLD_KINDS.has(meta.kind)&&!meta.hull&&!meta.legacy;
+  shape(name,build,worldShapes,1000,organic);worldMeta[name]=meta;
+  // §55 QC L: an organic shape's fit box starts at the ground (y = 0), so its
+  // buried foot (trunks open 0.4 below) never lifts it off the slot floor; a
+  // far LOD maps the near shape's box, so swapping LODs never moves or rescales it.
+  if(organic&&!meta.fit){
+    if(meta.lod==='far'){const near=worldMeta[name.slice(0,-3)];if(!near||near.far!==name)throw new Error(`${name}: far LOD without its near shape`);meta.fit=near.fit}
+    else{
+      const lo=[Infinity,Infinity,Infinity],hi=[-Infinity,-Infinity,-Infinity];
+      for(const p of worldShapes[name].vertices)for(let k=0;k<3;k++){lo[k]=Math.min(lo[k],p[k]);hi[k]=Math.max(hi[k],p[k])}
+      meta.fit=[[lo[0],Math.max(0,lo[1]),lo[2]],hi];
+    }
+  }
 }
 require('./world-shapes.cjs')({world,C,PI,hash,jitterOf});
 require('./region-shapes.cjs')({world,C,PI,hash,jitterOf});
 require('./beacon-shapes.cjs')({world,C,PI,hash,jitterOf});
 require('./rune-shapes.cjs')({world,C,PI,hash,jitterOf}); // §49 Runebinding: altar, guardian portal, Rift monolith
 require('./ship-shapes.cjs')({world,C,PI,hash,jitterOf}); // §51 Skysailing: hulls, mast, helm, cannon, docks, slip, reef, wreck, buoy
+require('./world-organic-shapes.cjs')({world,C,PI,hash}); // §55 organic re-authoring: trees, rocks, ores, crops, plants, nodes (+ far LODs)
 // Creatures (§48): forged on each client by creatures.client.lua through the
 // MeshForge creature API; their own catalog (art/CreatureCatalog.lua).
 function creature(name,meta,build){
   if(shapes[name]||worldShapes[name]||creatureShapes[name])throw new Error(`Duplicate shape name ${name}`);
   if(!CREATURE_TRIANGLE_RANGE[meta.kind])throw new Error(`${name}: unknown creature kind ${meta.kind}`);
-  shape(name,build,creatureShapes,1000);creatureMeta[name]=meta;
+  shape(name,build,creatureShapes,1000,false);creatureMeta[name]=meta; // §55: creatures keep their §48 build (organic baseline) until re-authored
 }
 const creatureKit=require('./creature-shapes.cjs')({creature,C,PI,hash,jitterOf});
 // NPC outfits (§52): forged on each client by npc.client.lua through the
@@ -607,14 +734,14 @@ const creatureKit=require('./creature-shapes.cjs')({creature,C,PI,hash,jitterOf}
 function outfit(name,meta,build){
   if(shapes[name]||worldShapes[name]||creatureShapes[name]||outfitShapes[name])throw new Error(`Duplicate shape name ${name}`);
   if(meta.kind!=='outfit'||!['head','torso','hand'].includes(meta.slot))throw new Error(`${name}: outfit kind / slot`);
-  shape(name,build,outfitShapes,1000);outfitMeta[name]=meta;
+  shape(name,build,outfitShapes,1000,true);outfitMeta[name]=meta;
 }
 require('./outfit-shapes.cjs')({outfit,C,PI,hash,jitterOf});
 // Environment art (§54): island dressing — clutter, shrubs, tree species,
 // cliff dressing and satellite rocks; their own lazily decoded catalog
 // (art/TerrainCatalog.lua), placed by terrain.client.lua through the forge's
 // "dress" pool. Smooth-shaded and facet-checked below.
-if(global.__aetherKit)global.__aetherKit({shape,organicMetrics:(...a)=>organicMetrics(...a),C,hash});
+if(global.__aetherKit)global.__aetherKit({shape,organicMetrics:(...a)=>organicMetrics(...a),subdivisionErrors:(...a)=>subdivisionErrors(...a),C,hash});
 const TERRAIN_TRIANGLE_RANGE = {clutter: [100, 2000], shrub: [150, 2000], rock: [300, 2400], foliage: [400, 7000], cliff: [150, 2900], satellite: [300, 3000]};
 // §54 QC A2-A4 (organic): 98 % of corner shading normals within 15 deg of their
 // face, <= 2 % of shared edges sharper than 35 deg (whatever the crease), and
@@ -646,9 +773,9 @@ function organicMetrics(data, smooth) {
   return {dev98, sharp: sharp / Math.max(1, shared)};
 }
 function subdivisionErrors(name, data, meta) {
-  const seg = meta.lod === 'far' || meta.kind === 'satellite' || meta.kind === 'cliff' ? SEG_FAR : SEG_NEAR, scale = meta.maxScale || 1, out = [];
+  const seg = meta.lod === 'far' || meta.segFar || meta.kind === 'satellite' || meta.kind === 'cliff' ? SEG_FAR : SEG_NEAR, scale = meta.maxScale || 1, out = [];
   for (const c of data.calls) {
-    if (c.prim === 'lathe' || c.prim === 'tube') {
+    if (c.prim === 'lathe' || c.prim === 'tube' || c.prim === 'loft') {
       const need = Math.max(16, Math.ceil(2 * Math.PI * c.radius * scale / seg));
       if (c.n < need) out.push(`${name}: ${c.prim} n ${c.n} < ${need} for radius ${c.radius} x ${scale}`);
     } else if (c.prim === 'blob') {
@@ -723,8 +850,10 @@ function hullErrors(name, data) {
 const hullReport = [];
 const rangeErrors=[];
 for(const [name,data] of Object.entries(worldShapes)){
-  const count=data.faces.length,range=worldMeta[name].hull?HULL_TRIANGLE_RANGE:worldMeta[name].kind==='building'||worldMeta[name].exactTint?BUILDING_TRIANGLE_RANGE:WORLD_TRIANGLE_RANGE;
+  const count=data.faces.length,range=worldMeta[name].hull?HULL_TRIANGLE_RANGE:ORGANIC_WORLD_KINDS.has(worldMeta[name].kind)&&!worldMeta[name].legacy?(worldMeta[name].lod==='far'?ORGANIC_FAR_RANGE:ORGANIC_WORLD_RANGE):worldMeta[name].kind==='building'||worldMeta[name].exactTint?BUILDING_TRIANGLE_RANGE:WORLD_TRIANGLE_RANGE;
   if(count<range[0]||count>range[1])rangeErrors.push(`${name} has ${count} triangles; ${worldMeta[name].kind} range is ${range.join('-')}`);
+  // §55 QC L: the packer writes vertex indices in two base-64 digits (<= 4095).
+  if(data.vertices.length>=4096)rangeErrors.push(`${name} has ${data.vertices.length} vertices (packing limit 4095)`);
   for(const vol of componentVolumes(data))if(vol<-1e-4)throw new Error(`${name} has an inward-wound component (volume ${vol})`);
   if(worldMeta[name].hull)rangeErrors.push(...hullErrors(name,data));
 }
@@ -783,7 +912,7 @@ for(const [name,data] of [...Object.entries(shapes),...Object.entries(worldShape
   if(!palette[shade-1])throw new Error(`${name} uses unknown shade ${shade}`);
 }
 // Tooling hook (survey / diagnostic scripts; unused by the build).
-if(global.__aetherShapes)global.__aetherShapes({shapes,worldShapes,worldMeta,creatureShapes,creatureMeta,outfitShapes,outfitMeta,terrainShapes,terrainMeta,palette});
+if(global.__aetherShapes)global.__aetherShapes({shapes,worldShapes,worldMeta,creatureShapes,creatureMeta,outfitShapes,outfitMeta,terrainShapes,terrainMeta,palette,rigs:creatureKit.rigs});
 if(global.__aetherShapesOnly)return;
 const iconShapeLua = `
 -- Item icon art: Catalog.iconShape(itemDef) -> shape name for an AetherData item.
@@ -859,9 +988,19 @@ const worldEntries=Object.entries(worldShapes).map(([name,data])=>{
   if(m.exactTint)extra.exactTint=true;
   if(m.interior)extra.interior=true;
   if(m.blend)extra.blend=m.blend;
+  if(m.sphere)extra.sphere=m.sphere;
+  if(m.maxScale)extra.maxScale=m.maxScale;
+  if(m.lod)extra.lod=m.lod;
+  if(m.far)extra.far=m.far;
+  if(m.segFar)extra.segFar=true;
+  // §55 QC H3: lazy like the other catalogs; tris / verts / box (the mesh
+  // bounds) are known without decoding the geometry.
+  const lo=[Infinity,Infinity,Infinity],hi=[-Infinity,-Infinity,-Infinity];
+  for(const p of data.vertices)for(let k=0;k<3;k++){lo[k]=Math.min(lo[k],p[k]);hi[k]=Math.max(hi[k],p[k])}
+  extra.tris=data.faces.length;extra.verts=data.vertices.length;extra.box=[lo,hi];
   const verts=data.vertices.map(p=>p.map(x=>packNumber(Math.round(x*1000)+PACK_OFFSET,3)).join('')).join('');
   const faces=data.faces.map(([a,b,c,shade])=>packNumber(a,2)+packNumber(b,2)+packNumber(c,2)+packNumber(shade,1)).join('');
-  return `shapes.${name}=unpack("${verts}","${faces}",${luaTable(extra)})`;
+  return `shapes.${name}=lazy("${verts}","${faces}",${luaTable(extra)})`;
 }).join('\n');
 const resourceShapes={Ore:'OreVein1',Aetherite:'OreVein1',Brassite:'OreVein2',SunsteelOre:'OreVein2',Voidstone:'OreVein3',StarmetalOre:'OreVein3',Prismite:'OreVein4',Celestium:'OreVein4',
   Timber:'MeadowTree',WindpineLog:'WindpineTree',EmberoakLog:'EmberoakTree',GlimmerbarkLog:'GlimmerbarkTree',StarwoodLog:'StarwoodTree',AetherheartLog:'AetherheartTree',
@@ -895,9 +1034,30 @@ local function unpack(verts,faces,meta)
 	meta.vertices,meta.faces=vertices,list
 	return meta
 end
+-- §55 QC H3: shapes stay packed until first used (like art/CreatureCatalog.lua).
+-- Reading .vertices or .faces decodes that shape alone; Catalog.drop(name)
+-- forgets the decoded arrays again (the MeshForge calls it once a template is
+-- built). tris / verts / box ({lo, hi} mesh bounds) are always known.
+local packed={}
+local LAZY={__index=function(meta,key)
+	if key~="vertices" and key~="faces" then return nil end
+	local source=packed[meta]
+	if not source then return nil end
+	unpack(source[1],source[2],meta)
+	return rawget(meta,key)
+end}
+local function lazy(verts,faces,meta)
+	meta.lazy=true
+	packed[meta]={verts,faces}
+	return setmetatable(meta,LAZY)
+end
 local shapes={}
 ${worldEntries}
-local Catalog={palette=palette,families=${FAMILY_LUA},shapes=shapes,tintIndex=${TINT},tintDarkIndex=${TINT_DARK},tintLightIndex=${TINT_LIGHT},tintDark=0.62,tintLight=0.4}
+local function drop(name)
+	local meta=shapes[name]
+	if type(meta)=="table" and packed[meta] then rawset(meta,"vertices",nil); rawset(meta,"faces",nil) end
+end
+local Catalog={palette=palette,families=${FAMILY_LUA},shapes=shapes,drop=drop,tintIndex=${TINT},tintDarkIndex=${TINT_DARK},tintLightIndex=${TINT_LIGHT},tintDark=0.62,tintLight=0.4}
 -- Suggested shape per AetherData resource id (gather nodes).
 Catalog.resourceShapes=${luaTable(resourceShapes)}
 function Catalog.resourceShape(id)

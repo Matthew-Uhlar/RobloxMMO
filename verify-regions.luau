@@ -231,7 +231,7 @@ for name, range in pairs(NEW) do
 	local data = World.shapes[name]
 	ok(data ~= nil, name .. " is authored")
 	-- §54 QC: the island hulls are 80-segment smooth strata (checked at real scale by the generator and verify-mesh).
-	local cap = if string.sub(name, 1, 6) == "Island" then 8000 else 1500
+	local cap = if string.sub(name, 1, 6) == "Island" then 8000 elseif data.maxScale then 12000 else 1500 -- §55 re-authored organic shapes
 	ok(#data.faces >= 200 and #data.faces <= cap, name .. " triangle budget (" .. #data.faces .. ")")
 	ok(#data.vertices <= 4095, name .. " vertex count packs")
 	newTris += #data.faces

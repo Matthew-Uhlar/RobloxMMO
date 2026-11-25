@@ -199,6 +199,23 @@ function S.outfit(role, def)
 	end
 	return out
 end
+-- §55 QC M3: the outfit within the device's per-NPC triangle budget. Pieces
+-- keep their order (hat, held prop, cape / apron, trade extras); one that would
+-- overflow S.NPC_TRIS is left off. trisOf(shape) -> triangles.
+function S.trim(outfit, trisOf, phone)
+	local cap = if phone then S.NPC_TRIS.phone else S.NPC_TRIS.desktop
+	local out, total = table.clone(outfit), 0
+	out.pieces = {}
+	for _, p in ipairs(outfit.pieces) do
+		local tris = trisOf(p.shape) or 0
+		if total + tris <= cap then
+			table.insert(out.pieces, p)
+			total += tris
+		end
+	end
+	out.tris = total
+	return out
+end
 -- The pieces' signature (shape list + dyes), for distinctness checks.
 function S.signature(outfit)
 	local parts = {}
@@ -407,10 +424,13 @@ end
 -- Animation level of detail by distance: 2 = 30 Hz, 1 = 15 Hz, 0 = off.
 S.ANIM_RANGE = {desktop = {full = 45, half = 90}, phone = {full = 25, half = 55}}
 S.DRESS_RANGE = {desktop = 90, phone = 50} -- forged outfits within this many studs
-S.DRESS_CAP = {desktop = 14, phone = 4} -- most NPCs dressed in meshes at once (nearest win)
+S.DRESS_CAP = {desktop = 14, phone = 3} -- most NPCs dressed in meshes at once (nearest win)
+-- §55 QC M3: outfit triangles one dressed NPC may wear (S.trim drops the pieces
+-- that would overflow; their primitive fallback stays). Device class: shared/Device.lua.
+S.NPC_TRIS = {desktop = 13000, phone = 6000}
 -- Outfit pool the dressed sets must fit (forge.client.lua OUTFIT_*; verify-npcart sums the
--- distinct templates of the worst-case dressed set per region against both).
-S.POOL = {desktop = {templates = 52, triangles = 52000}, phone = {templates = 18, triangles = 20000}}
+-- distinct templates of the worst-case trimmed dressed set per region against both).
+S.POOL = {desktop = {templates = 52, triangles = 160000}, phone = {templates = 18, triangles = 20000}} -- §55 QC M3: sized for the trimmed (S.NPC_TRIS) worst case
 -- Most NPCs animated at once (nearest win; QC L), re-ranked every 0.5 s.
 S.ANIM_CAP = {desktop = 18, phone = 8}
 function S.lod(distance, phone)

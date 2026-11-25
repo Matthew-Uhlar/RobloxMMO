@@ -190,7 +190,7 @@ Every one of the 49 townsfolk now wears forged smooth outfit pieces (35 meshes i
 
 An original eight-chapter main story in the OSRS quest style across every region (`Data.Story`, the Story block in `server.server.lua`, `story.server.lua`, `story.client.lua`, Journal › Story, the Story section of `combat.server.lua`). Chapters gate on skills (Runebinding, Skysailing, Beaconry …), Quest Points and quests; steps are talks, strikes / kills / crafts counted since the step, a beacon lighting, a real airship voyage, three server-held puzzles (rune lock, constellation rings, signal mirrors) and three instanced bosses with unique mechanics (Gloamwick's moving lantern light, Vaelith's Stormcross, Caedmon's Unravel beam and Sunder). Rewards: 18 Quest Points (in the Journal total), level-scaled XP lamps, six untradeable uniques and the Loomheart fast-travel node. Eleven skippable cutscenes; nine voiced NPCs, 39 dialogue nodes. `verify-story.luau` guards it; the Studio checklist is in contract §53.
 
-## 14. Update: §54 Island environment art
+## 15. Update: §54 Island environment art
 
 The islands themselves got an environment pass, all client-side and decorative (no server parts, `world.server.lua` untouched, gather nodes untouched).
 
@@ -206,3 +206,19 @@ The meshes are 22 smooth shapes in `art/TerrainCatalog.lua`. The rules live in `
 - **Islands have thick cliff walls,** `clamp(R*0.18, 10, 30)` studs (lead decision). Near islands get a forged wall at absolute size: a turf lip, a soil band, then strata.
 - **Near and far tree LODs.**
 - **All the client findings are fixed:** backoffs, quiet-model re-planning, 2 ms slices, oriented footprints, skirt and SwayRest. Details are in contract §54, "QC round".
+
+## Pause point (2026-11-25)
+
+Published live (all via PRs into main, each QC-reviewed with a fix round): §45 Combat Feats, §46 Gathering Hearts, §47 animation depth, §48 creature art, §49 Runebinding, §50 ambience/weather, §51 Skysailing, §52 NPC outfits + item icons, §53 The Sundered Sky, §54 island environment + per-vertex colour. The final publish adds §55 (62 organic shapes re-authored to the strict smoothness bar) — this one was NOT independently QC-reviewed (owner asked to publish before their usage ran out).
+
+Open work for the next lead:
+- **§55 is NOT published yet (PR #15 open).** Its QC review (2026-11-25) found a phone regression; the fix round is done (contract §55 "QC fix round"):
+  - H1 FIXED: creature placed reserve in forge.client.lua (phone 25k, desktop 80k); the verify-mesh phone tour passes "every shape within 40 studs meshed" with it and asserts placed headroom >= the reserve at every stop (phone ~80-83 % placed).
+  - H2 FIXED: CliffPiece 2320 (SEG_FAR), TilledSoil 942, FlowerPatch 2880, CropBloom 2898, CropGlowcap 2634, PalmTree 3760, AetherheartTree 3828; every organic world shape <= 4k at the strict bar, each with a `<Name>Far` LOD (<= 1.2k, far bar dev98 <= 22 / sharp <= 4 %) placed beyond 40 studs on phones / 150 on desktop.
+  - H3 FIXED: WorldCatalog lazy (tris / verts / box, Catalog.drop); phones always use the far LOD of a near shape over 3k.
+  - M1 FIXED (baseline min(old,new), existing names only; ratchet <= 69). M3 FIXED (shared/Device.lua; outfits trimmed to 6k phone / 8k desktop per NPC; outfit pool 90k / 20k). Lows FIXED (fit lo.Y = 0, >= 4096-vertex error, stale comments; the fairing bounds check is still open).
+  - Next: re-run QC on the fix round, then publish §55.
+- Re-author the 64 creature shapes and 5 legacy world shapes still in `art/organic-baseline.json` (keep within rig budgets; packer vertex limit 4,095).
+- Cliff-wall detail (strata bands, ledges, crystal cracks) from §54's open list.
+- CI: Windows build job limit is 35 min and publish 45 min; the suite count keeps growing, watch run times.
+- Everything visual still needs a Studio play-test (each §'s "Needs Studio check" list).
