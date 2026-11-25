@@ -1582,7 +1582,42 @@ function WBH.hide()
 end
 -- Warning discs: a translucent cylinder that fills over the windup; "safe"
 -- marks the shelter (green) inside a red arena ring.
+-- §53 Story: cross / beam / half telegraphs are flat bands (and a half-plane)
+-- along the server's direction (ux, uz); they fill over the windup like discs.
+WBH.BANDS = {cross = "! Stand between the arms!", beam = "! Step out of the beam!", half = "! Cross the line!"}
+function WBH.bands(payload)
+	local center = payload.center
+	local ux, uz = tonumber(payload.ux), tonumber(payload.uz)
+	if typeof(center) ~= "Vector3" or not ux or not uz then return end
+	local windup = math.clamp(tonumber(payload.windup) or 2, 0.3, 6)
+	local width = math.clamp(tonumber(payload.width) or 6, 1, 40)
+	local length = math.clamp(tonumber(payload.length) or 40, 4, 120)
+	local yaw = math.atan2(-ux, -uz) -- LookVector = (ux, 0, uz)
+	local base = CFrame.new(center + Vector3.new(0, 0.25, 0)) * CFrame.Angles(0, yaw, 0)
+	local bands = {}
+	if payload.kind == "cross" then
+		bands = {{base, Vector3.new(width, 0.2, length)}, {base, Vector3.new(length, 0.2, width)}}
+	elseif payload.kind == "beam" then
+		bands = {{base * CFrame.new(0, 0, -length / 2), Vector3.new(width, 0.2, length)}}
+	elseif payload.kind == "half" then
+		bands = {{base * CFrame.new(0, 0, -20), Vector3.new(80, 0.2, 40)}}
+	end
+	for _, b in ipairs(bands) do
+		local band = fxPart({Shape = Enum.PartType.Block, Material = Enum.Material.Neon, Color = rgb("FF4F3A"), Transparency = 0.55, Size = b[2], CFrame = b[1]})
+		band.Name = "BossTelegraph"
+		band.Parent = Workspace.CurrentCamera
+		TweenService:Create(band, TweenInfo.new(windup, Enum.EasingStyle.Linear), {Transparency = 0.25}):Play()
+		table.insert(WBH.discs, band)
+		task.delay(windup + 0.15, function()
+			local i = table.find(WBH.discs, band)
+			if i then table.remove(WBH.discs, i) end
+			band:Destroy()
+		end)
+	end
+	if payload.name then toast(tostring(payload.name) .. (WBH.BANDS[payload.kind] or "!")) end
+end
 function WBH.disc(payload)
+	if WBH.BANDS[payload.kind] then return WBH.bands(payload) end
 	local center = payload.center
 	if typeof(center) ~= "Vector3" then return end
 	local radius = math.clamp(tonumber(payload.radius) or 8, 2, 60)

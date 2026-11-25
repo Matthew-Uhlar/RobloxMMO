@@ -18867,4 +18867,875 @@ end
 -- <<< END Skysailing <<<
 ------------------------------------------------------------------------------
 
+-- >>> BEGIN Story (Story team; append-only section; docs/DEPTH-CONTRACT.md §53) >>>
+-- "The Sundered Sky": an eight-chapter main story in the OSRS quest style.
+-- Every name, place, creature and line is original to Aether Isles.
+--   * Chapters (ST.Chapters) run in order. Each has requirements (skills incl.
+--     Runebinding / Skysailing, Quest Points, contracts, earlier quests), a giver
+--     and ordered steps. A step is advanced only by its own validated event:
+--       talk     {npc}       storyTalk <role> beside that NPC (RA.TALK_RADIUS)
+--       inspect  {pieces}    storyInspect <piece> from the set piece's prompt
+--       collect  {item,n}    lifetime collection since the step began (strikes)
+--       kills    {monster,n} bestiary kills since the step began
+--       craft    {item,n}    crafts since the step began
+--       beacon   {beacon}    light (or bask at) that Beaconry pyre while current
+--       sail     {port}      dock your own ship at that skydock while current
+--       puzzle   {puzzle}    a server-held puzzle state solved by storyPuzzle moves
+--       boss     {boss}      win the instanced encounter (storyBoss at its gate)
+--   * Rewards on the last step, once (the chapter index only moves forward):
+--     Quest Points (added to the Journal total, gating later content), XP lamps
+--     (p.story.lamps; rub with storyLamp <Skill>: level-scaled XP), untradeable
+--     unique items, and at the end a permanent fast-travel node (Loomheart).
+--   * Cutscenes (ST.Cutscenes) are cosmetic: the server only names the one a
+--     step change unlocked (p.story.cut); the client plays, skips or replays it.
+--     ST.cutStart / ST.cutStep is the runner (deadline, skip, death, teleport).
+-- Pure data and rules. Server: the Story block in server.server.lua; arenas and
+-- set pieces: story.server.lua; boss logic: the Story section of
+-- combat.server.lua; client: story.client.lua + Journal › Story (ui.client.lua).
+------------------------------------------------------------------------------
+do
+local ST = {}
+Data.Story = ST
+local T, RA, LR = Data.Townsfolk, Data.RegionArt, Data.Lairs
+local function whole(v)
+	v = tonumber(v)
+	if not v or v ~= v or v == math.huge or v == -math.huge then return 0 end
+	return math.floor(v)
+end
+local function tab(v) return if type(v) == "table" then v else {} end
+ST.whole = whole
+
+ST.VERSION = 1
+ST.TITLE = "The Sundered Sky"
+ST.TALK_RADIUS = (RA and RA.TALK_RADIUS) or 16
+ST.PIECE_RANGE = 14          -- studs from a set piece's anchor for puzzle moves
+ST.PUZZLE_RANGE = 30
+ST.LOCK_LOCKOUT = 10         -- s after a wrong rune-lock attempt
+ST.MAX_LAMPS = 16
+ST.LAMP_EXCLUDE = {Dungeoneering = true, Carpentry = true}
+ST.TICK = 0.55               -- the fight loop (distinct from other suites' loop waits)
+ST.WARMUP = 6                -- s between entering an arena and the boss rising (intro cutscene)
+ST.AWAY_SECONDS = 6          -- s outside the arena before the fight is abandoned
+ST.ARENA_RANGE = 40
+ST.MAX_FIGHTS = 8
+ST.ARENA_ORIGIN = {x = -3600, y = 320, z = -3600}
+ST.ARENA_SPACING = 360
+ST.WARP_COOLDOWN = 20
+ST.CUTSCENE_MAX = 40         -- s: hard cap of any cutscene (watchdog)
+ST.CUTSCENE_GRACE = 2
+ST.FIGHT_FLAG = "StoryFight" -- player attribute while inside an encounter
+
+------------------------------------------------------------------------------
+-- The cast (regional folk on anchors; distinct voices).
+------------------------------------------------------------------------------
+ST.Cast = {
+	{role="StoryArchivist",region="Hub",name="Sefa Lumenward",title="Skyward Archivist",portrait="📜",voice="precise",color="F2D27A",
+		look={skin="8D5A3B",shirt="2E4A6B",pants="1F2F4F",shoes="2B2B2B",accent="F2D27A",hair="1A1A1A",hat="feather",held="tome",cape="2E4A6B"},
+		greet="Mind the ink, it's still wet. Every chart in this archive says the isles were never one piece. Every chart is wrong."},
+	{role="StoryMiller",region="Meadow",name="Brannick Tallow",title="Hedge-Miller",portrait="🌾",voice="folksy",color="E9C46A",
+		look={skin="E0AC69",shirt="8A6240",pants="5C4033",shoes="3A2A1E",accent="E9C46A",hair="C9C9C9",hat="straw",held="crook",apron="F2E6C8"},
+		greet="Ach, mind the chaff. Sky's been fraying over the far field since the harvest moon. Wheat leans toward it like it's thirsty."},
+	{role="StoryQuarrymaster",region="Quarry",name="Dagna Holt",title="Quarrymaster",portrait="⚒",voice="gruff",color="FF8A3D",
+		look={skin="A16E4B",shirt="6D4C41",pants="3A2A1E",shoes="1A1A1A",accent="FF8A3D",hair="B23A48",hat="minerhelm",held="hammer",apron="3A2A1E"},
+		greet="Talk while you walk. Shift ends when the bell rings, not before."},
+	{role="StorySeer",region="Windpine",name="Thessaly Moss",title="Grove-Seer",portrait="🍃",voice="poetic",color="9BD77E",
+		look={skin="C68E62",shirt="2F5233",pants="1F3A24",shoes="2B2B2B",accent="9BD77E",hair="ECEFF1",hat="hood",held="staff",cape="558B2F"},
+		greet="The pines are counting backwards, wanderer. They only do that when something old is waking."},
+	{role="StoryWick",region="Gloomhollow",name="Wick",title="Lantern-Child",portrait="🕯",voice="flickering",color="FFD166",
+		look={skin="F2E6C8",shirt="4B2C7A",pants="2B2B2B",shoes="1A1A1A",accent="FFD166",hair="FFD166",hat="cap",held="lantern",cape="7B1FA2"},
+		greet="...oh! You can see me? ...good. Most can't. ...the dark here eats light. And names. Mine's Wick. ...I think."},
+	{role="StoryCaptain",region="Tidewater",name="Captain Orla Strand",title="Skyship Captain",portrait="⚓",voice="salty",color="7FE0E8",
+		look={skin="8D5A3B",shirt="0277BD",pants="1F2F4F",shoes="1A1A1A",accent="7FE0E8",hair="3A2A1E",hat="tricorn",held="sword",cape="00838F"},
+		greet="Ha! Another landlubber with sky in their eyes. Stand clear of the rigging and we'll get along fine."},
+	{role="StoryStargazer",region="Skyreach",name="Ivo Penhallow",title="Star-Reckoner",portrait="✦",voice="excitable",color="BFE3FF",
+		look={skin="E0AC69",shirt="1F2F4F",pants="37474F",shoes="2B2B2B",accent="BFE3FF",hair="8D6E63",hat="goggles",held="scroll",cape="0277BD"},
+		greet="Oh! Oh, a visitor! Don't touch the brass, it's calibrated. Well, it was calibrated. Mostly. Do you know any constellations?"},
+	{role="StoryStormward",region="Tempest",name="Rhosyn Gale",title="Storm-Warden",portrait="⚡",voice="stern",color="9CC8FF",
+		look={skin="C68E62",shirt="37474F",pants="2B2B2B",shoes="1A1A1A",accent="9CC8FF",hair="ECEFF1",hat="helm",held="spear",cape="1F2F4F"},
+		greet="State your business. The Spire does not suffer sightseers, and neither do I."},
+	{role="StoryLoomwright",region="ShatteredCrown",name="Oriane Duskmere",title="Last Loomwright",portrait="🧵",voice="ancient",color="D8B4FF",
+		look={skin="F2E6C8",shirt="4B2C7A",pants="1F2F4F",shoes="2B2B2B",accent="D8B4FF",hair="ECEFF1",hat="mage",held="staff",cape="ECEFF1"},
+		greet="So the thread found you after all. I wove the first knot of this sky, child. I will not live to see the last one cut."},
+}
+ST.CastByRole = {}
+for _, c in ipairs(ST.Cast) do ST.CastByRole[c.role] = c end
+-- Speakers in cutscenes (the cast plus the antagonist, who is never a townsfolk).
+ST.Voices = {Caedmon = {name = "Caedmon Ashveil", title = "the Sunderer", color = "B48CFF", voice = "grand"}, Narrator = {name = "", title = "", color = "F2E6C8", voice = "narrator"}}
+for _, c in ipairs(ST.Cast) do ST.Voices[c.role] = {name = c.name, title = c.title, color = c.color, voice = c.voice} end
+
+------------------------------------------------------------------------------
+-- Set pieces (story.server.lua places them; anchors Anchor_Story_<id>).
+-- isle = the island model name; near = an anchor to stand beside (else the
+-- island centre); off = offset {x,z} from it. prompt = {action text, object text}.
+------------------------------------------------------------------------------
+ST.Pieces = {
+	{id="SkyTear",isle="Meadow Reach",region="Meadow",near="Waypoint_Landmark_Sunwheel",off={x=18,z=-14},shape="tear",prompt={"Inspect","Fraying sky"}},
+	{id="GlyphStone1",isle="Brassfall Quarry",region="Quarry",off={x=-22,z=18},shape="stone",prompt={"Take a rubbing","Glyph stone I"}},
+	{id="GlyphStone2",isle="Brassfall Quarry",region="Quarry",off={x=24,z=20},shape="stone",prompt={"Take a rubbing","Glyph stone II"}},
+	{id="GlyphStone3",isle="Brassfall Quarry",region="Quarry",off={x=26,z=-22},shape="stone",prompt={"Take a rubbing","Glyph stone III"}},
+	{id="GlyphStone4",isle="Brassfall Quarry",region="Quarry",off={x=-24,z=-20},shape="stone",prompt={"Take a rubbing","Glyph stone IV"}},
+	{id="BrassVault",isle="Brassfall Quarry",region="Quarry",off={x=0,z=-34},shape="vault",prompt={"Study","Brassbound Vault"},puzzle="runelock"},
+	{id="GloamGate",isle="Gloomhollow Caverns",region="Gloomhollow",off={x=-30,z=22},shape="gate",prompt={"Enter","Gloamwick's Hollow"},boss="Gloamwick"},
+	{id="Astrolabe",isle="Skyreach",region="Skyreach",near="Waypoint_Landmark_SunkenObservatory",off={x=-16,z=16},shape="astrolabe",prompt={"Study","Great Astrolabe"},puzzle="stars"},
+	{id="RegentGate",isle="Tempest Spire",region="Tempest",off={x=26,z=-20},shape="gate",prompt={"Enter","The Regent's Eyrie"},boss="Vaelith"},
+	{id="ShoalLens",isle="Tidewater Shoals",region="Tidewater",near="Waypoint_Landmark_ShoalLight",off={x=12,z=10},shape="lens",prompt={"Inspect","Cracked signal lens"}},
+	{id="MirrorField",isle="Tidewater Shoals",region="Tidewater",near="Waypoint_Landmark_ShoalLight",off={x=-26,z=-8},shape="mirrors",prompt={"Study","Signal mirrors"},puzzle="mirrors"},
+	{id="LoomThread1",isle="The Shattered Crown",region="ShatteredCrown",off={x=-24,z=14},shape="thread",prompt={"Mend","Frayed sky-thread"}},
+	{id="LoomThread2",isle="The Shattered Crown",region="ShatteredCrown",off={x=22,z=18},shape="thread",prompt={"Mend","Frayed sky-thread"}},
+	{id="LoomThread3",isle="The Shattered Crown",region="ShatteredCrown",off={x=4,z=-28},shape="thread",prompt={"Mend","Frayed sky-thread"}},
+	{id="SunderGate",isle="The Shattered Crown",region="ShatteredCrown",off={x=-6,z=34},shape="gate",prompt={"Enter","The Sundering Loom"},boss="Caedmon"},
+	{id="Loomheart",isle="The Shattered Crown",region="ShatteredCrown",off={x=30,z=-6},shape="loomheart",prompt={"Travel","Loomheart Terrace · Compass Quay"},warp="Quay"},
+	{id="QuayLoom",isle="Compass Quay",region="Hub",off={x=-40,z=-46},shape="loomstone",prompt={"Travel","Loomstone · Loomheart Terrace"},warp="Loomheart"},
+}
+ST.PieceById = {}
+for i, p in ipairs(ST.Pieces) do p.index = i; ST.PieceById[p.id] = p end
+
+------------------------------------------------------------------------------
+-- Puzzles (server-held state; one move per verb).
+------------------------------------------------------------------------------
+-- Rune lock: four dials, each must hold a specific bound rune. The answer is
+-- per journal (seeded by UserId) and read off the four glyph stones.
+ST.RUNES = {"GaleRune","SparkRune","TideRune","StoneRune","EmberRune"}
+ST.DIALS = 4
+local function lcg(x) return (x * 48271 + 11) % 2147483647 end
+function ST.seedOf(uid) return (whole(uid) * 7919 + 104729) % 2147483647 end
+function ST.runeSolution(seed)
+	local pool = table.clone(ST.RUNES)
+	local x = whole(seed) % 2147483647
+	local out = {}
+	for i = 1, ST.DIALS do
+		x = lcg(x)
+		local j = x % #pool + 1
+		out[i] = table.remove(pool, j)
+	end
+	return out
+end
+-- Constellation rings: five rings with eight stops; turning ring i also turns
+-- ring i+1 (ring 5 turns ring 1). Solved when every ring reads 0. The start is
+-- a scramble made of real moves (always solvable).
+ST.RINGS, ST.STOPS = 5, 8
+ST.STAR_SCRAMBLE = 9
+function ST.starTurn(s, i)
+	i = whole(i)
+	if i < 1 or i > ST.RINGS then return false end
+	local nxt = i % ST.RINGS + 1
+	s[i] = (whole(s[i]) + 1) % ST.STOPS
+	s[nxt] = (whole(s[nxt]) + 1) % ST.STOPS
+	return true
+end
+function ST.starStart(seed)
+	local s = {}
+	for i = 1, ST.RINGS do s[i] = 0 end
+	local x = whole(seed) % 2147483647
+	-- Undo-moves: turning ring i seven times is its inverse, so the scramble
+	-- is k inverse turns; the solver needs k forward turns of the same rings.
+	for _ = 1, ST.STAR_SCRAMBLE do
+		x = lcg(x)
+		local i = x % ST.RINGS + 1
+		for _ = 1, ST.STOPS - 1 do ST.starTurn(s, i) end
+	end
+	local zero = true
+	for i = 1, ST.RINGS do if s[i] ~= 0 then zero = false end end
+	if zero then for _ = 1, ST.STOPS - 1 do ST.starTurn(s, 1) end end
+	return s
+end
+function ST.starSolved(s)
+	for i = 1, ST.RINGS do if whole(tab(s)[i]) ~= 0 then return false end end
+	return true
+end
+-- Light-beam mirrors: a 6x6 field; the beam enters west of (1, 2) heading east.
+-- Mirrors flip between "/" (0) and "\" (1); walls stop the beam; the receiver
+-- is the lighthouse lens. Directions: 1 east, 2 north, 3 west, 4 south.
+ST.Mirror = {
+	size = 6, source = {x = 0, y = 2, dir = 1}, receiver = {x = 6, y = 6},
+	mirrors = {{x = 1, y = 4}, {x = 4, y = 6}, {x = 4, y = 4}, {x = 2, y = 2}, {x = 1, y = 6}, {x = 2, y = 6}},
+	walls = {{x = 6, y = 4}, {x = 5, y = 5}, {x = 6, y = 5}, {x = 1, y = 3}},
+}
+local DX, DY = {1, 0, -1, 0}, {0, 1, 0, -1}
+local SLASH = {2, 1, 4, 3}      -- "/": east->north, north->east, west->south, south->west
+local BACKSLASH = {4, 3, 2, 1}  -- "\": east->south, north->west, west->north, south->east
+function ST.traceBeam(states, layout)
+	layout = layout or ST.Mirror
+	local mirrorAt, wallAt = {}, {}
+	for i, m in ipairs(layout.mirrors) do mirrorAt[m.x .. ":" .. m.y] = i end
+	for _, w in ipairs(layout.walls) do wallAt[w.x .. ":" .. w.y] = true end
+	local x, y, d = layout.source.x, layout.source.y, layout.source.dir
+	local path = {}
+	for _ = 1, 4 * layout.size * layout.size do
+		x, y = x + DX[d], y + DY[d]
+		if x < 1 or y < 1 or x > layout.size or y > layout.size then return false, path, "edge" end
+		table.insert(path, {x = x, y = y})
+		if x == layout.receiver.x and y == layout.receiver.y then return true, path, "receiver" end
+		if wallAt[x .. ":" .. y] then return false, path, "wall" end
+		local mi = mirrorAt[x .. ":" .. y]
+		if mi then d = if whole(tab(states)[mi]) == 1 then BACKSLASH[d] else SLASH[d] end
+	end
+	return false, path, "loop"
+end
+function ST.mirrorStart(seed)
+	local x = whole(seed) % 2147483647
+	for _ = 1, 64 do
+		local s = {}
+		for i = 1, #ST.Mirror.mirrors do x = lcg(x); s[i] = x % 2 end
+		if not ST.traceBeam(s) then return s end
+	end
+	local s = {}
+	for i = 1, #ST.Mirror.mirrors do s[i] = 0 end
+	return s
+end
+ST.Puzzles = {
+	runelock = {name = "The Brassbound Lock", piece = "BrassVault"},
+	stars = {name = "The Great Astrolabe", piece = "Astrolabe"},
+	mirrors = {name = "The Shoal Light Mirrors", piece = "MirrorField"},
+}
+-- A fresh puzzle state for this journal.
+function ST.puzzleStart(id, seed)
+	if id == "runelock" then
+		local d = {}
+		for i = 1, ST.DIALS do d[i] = "" end
+		return {id = id, s = d}
+	elseif id == "stars" then
+		return {id = id, s = ST.starStart(seed)}
+	elseif id == "mirrors" then
+		return {id = id, s = ST.mirrorStart(seed)}
+	end
+	return nil
+end
+function ST.puzzleSolved(pz, seed)
+	pz = tab(pz)
+	if pz.id == "stars" then return ST.starSolved(pz.s) end
+	if pz.id == "mirrors" then return (ST.traceBeam(pz.s)) == true end
+	if pz.id == "runelock" then
+		local sol = ST.runeSolution(seed)
+		for i = 1, ST.DIALS do if tab(pz.s)[i] ~= sol[i] then return false end end
+		return true
+	end
+	return false
+end
+-- Parses a puzzle move "<puzzle>:<op>[:<a>[:<b>]]" (whitelisted).
+function ST.parseMove(item)
+	if type(item) ~= "string" or #item > 48 then return nil end
+	local id, op, a, b = string.match(item, "^(%a+):(%a+):?(%w*):?(%w*)$")
+	if not ST.Puzzles[id] then return nil end
+	if op == "reset" then return {id = id, op = op} end
+	if id == "runelock" then
+		if op == "try" then return {id = id, op = op} end
+		local dial = tonumber(a)
+		if op == "set" and dial and dial >= 1 and dial <= ST.DIALS and dial == math.floor(dial) and (b == "" or table.find(ST.RUNES, b)) then
+			return {id = id, op = op, dial = dial, rune = b}
+		end
+	elseif id == "stars" then
+		local ring = tonumber(a)
+		if op == "turn" and ring and ring >= 1 and ring <= ST.RINGS and ring == math.floor(ring) then return {id = id, op = op, ring = ring} end
+	elseif id == "mirrors" then
+		local m = tonumber(a)
+		if op == "turn" and m and m >= 1 and m <= #ST.Mirror.mirrors and m == math.floor(m) then return {id = id, op = op, mirror = m} end
+	end
+	return nil
+end
+
+------------------------------------------------------------------------------
+-- Encounters: lair-shaped boss definitions run by combat.server.lua's Lairs
+-- machinery (stances, telegraphs, adds / sigils, phases, enrage) plus the
+-- Story section's unique mechanics:
+--   lanterns  the boss is shrouded (refusal "shrouded") unless the striker
+--             stands within the lit lantern's light; the light moves.
+--   cross     two crossing bands through the boss (dodge between the arms).
+--   beam      a band from the boss through a chosen victim.
+--   half      the boss sunders half the arena along a line through the centre.
+------------------------------------------------------------------------------
+local function attack(kind, name, o) o.kind, o.name = kind, name; return o end
+ST.Bosses = {
+	Gloamwick={name="Gloamwick, the Lantern Eater",short="Gloamwick",chapter=3,level=40,body="wraith",color="5B4B8A",arenaColor="2A2238",
+		hp=26000,damage=110,defense=70,xp=900,speed=12,weakness="ranged",stances={"magic"},stanceEvery=99,enrage=180,duration=360,
+		lanterns={count=4,radius=9,ring=22,every=12},
+		blurb="A hunger that wears a cloak of stolen dark. It cannot be touched outside the light.",
+		mechanics={"Shroud: strike only from inside the lit lantern's glow","The lit lantern moves every 12 s","Gloomgrasp, Snuff and Gloomtide telegraphs"},
+		phases={
+			{at=1,name="Hungering",rotation={"grasp","snuff"},interval=7},
+			{at=0.5,name="Gorged",rotation={"snuff","grasp","tide"},interval=5.5},
+		},
+		attacks={
+			grasp=attack("disc","Gloomgrasp",{radius=7,windup=1.8,mult=1.8}),
+			snuff=attack("ring","Snuff",{radius=10,windup=2.2,mult=2.0}),
+			tide=attack("safe","Gloomtide",{radius=9,windup=3.0,mult=2.2}),
+		}},
+	Vaelith={name="Vaelith, the Stormglass Regent",short="Vaelith",chapter=6,level=60,body="drake",color="8FB8FF",arenaColor="2E3B4E",
+		hp=68000,damage=230,defense=170,xp=3200,speed=14,weakness="melee",stances={"ranged","magic"},stanceEvery=4,enrage=240,duration=420,
+		blurb="A drake of living stormglass who rules the Spire's eye. Its conduits shield it; its storm crosses the floor.",
+		mechanics={"Stance switch every 4 attacks: Ward of Quills / Ward of Glyphs","Stormcross: crossing bands of lightning (stand between the arms)","Storm Conduits shield it (65% less damage) until shattered"},
+		phases={
+			{at=1,name="Gathering Squall",rotation={"cross","spear","conduits"},interval=7},
+			{at=0.5,name="Eye of Glass",rotation={"cross","conduits","cross","spear"},interval=5.5},
+		},
+		attacks={
+			cross=attack("cross","Stormcross",{width=7,length=46,windup=2.2,mult=2.2}),
+			spear=attack("disc","Glass Spear",{radius=6,windup=1.6,mult=1.8}),
+			conduits=attack("adds","Storm Conduits",{add="StormConduit",count=2,radius=15}),
+		}},
+	Caedmon={name="Caedmon Ashveil, the Sunderer",short="Caedmon",chapter=8,level=80,body="sovereign",color="B48CFF",arenaColor="241C38",
+		hp=150000,damage=400,defense=270,xp=6000,speed=13,weakness="magic",stances={"melee","ranged","magic"},stanceEvery=3,enrage=300,duration=480,
+		blurb="The Archive's lost master. He would cut the last threads and reweave the sky in his own image.",
+		mechanics={"Stance cycle melee → ranged → magic every 3 attacks","Sunder: half the arena falls (cross the line)","Unravel: a beam through a chosen weaver","Loom Threads (ordered, immune boss) and a shifting weakness"},
+		phases={
+			{at=1,name="The Archivist",weakness="magic",rotation={"beam","threads","sunder","beam"},interval=7},
+			{at=0.66,name="The Unweaver",weakness="ranged",rotation={"sunder","beam","threads","ring"},interval=6},
+			{at=0.33,name="The Sunderer",weakness="melee",rotation={"sunder","ring","beam","threads"},interval=5},
+		},
+		attacks={
+			beam=attack("beam","Unravel",{width=6,length=60,windup=1.8,mult=2.0}),
+			sunder=attack("half","Sunder",{windup=2.6,mult=2.4}),
+			ring=attack("ring","Unweaving",{radius=12,windup=2.2,mult=2.2}),
+			threads=attack("sigils","Loom Threads",{add="LoomThread",count=3,radius=16}),
+		}},
+}
+ST.BossOrder = {"Gloamwick","Vaelith","Caedmon"}
+ST.Adds = {
+	StormConduit={name="Storm Conduit",level=58,hp=6000,damage=0,defense=120,xp=180,speed=0,color="9AD8FF",style="magic",body="wisp",stationary=true},
+	LoomThread={name="Loom Thread",level=78,hp=14000,damage=0,defense=180,xp=360,speed=0,color="F2D27A",style="magic",body="wisp",stationary=true},
+}
+do
+	local CS = Data.CombatStyles
+	for _, id in ipairs(ST.BossOrder) do
+		local def = ST.Bosses[id]
+		def.id, def.lair, def.story = id, true, true
+		def.attackStyle = def.stances[1]
+		def.weakness, def.defenceStyle = LR.triangle(def.weakness)
+		def.coins, def.drops = 0, {}
+		for k, a in pairs(def.attacks) do a.id = k end
+	end
+	for id, def in pairs(ST.Adds) do
+		def.id, def.lair, def.lairAdd, def.story = id, true, true, true
+		def.attackStyle, def.weakness, def.defenceStyle = def.style, CS.beatenBy[def.style], CS.beats[def.style]
+		def.coins, def.drops = 0, {}
+	end
+	-- Lair adds resolve story adds (combat's spawnAdds / lrRegisterAdd read LR.Adds[id]).
+	local mtA = getmetatable(LR.Adds)
+	local priorA = mtA and mtA.__index
+	setmetatable(LR.Adds, {__index = function(t, id)
+		local v
+		if type(priorA) == "function" then v = priorA(t, id) elseif type(priorA) == "table" then v = priorA[id] end
+		if v ~= nil then return v end
+		return rawget(ST.Adds, id)
+	end})
+	-- Lookups by id reach story bosses and adds (damage XP); pairs() never sees them.
+	local mt = getmetatable(Data.Monsters)
+	local prior = mt and mt.__index
+	setmetatable(Data.Monsters, {__index = function(t, id)
+		local v
+		if type(prior) == "function" then v = prior(t, id) elseif type(prior) == "table" then v = prior[id] end
+		if v ~= nil then return v end
+		return rawget(ST.Bosses, id) or rawget(ST.Adds, id)
+	end})
+end
+function ST.boss(id) return type(id) == "string" and rawget(ST.Bosses, id) or nil end
+-- Lantern spots (offsets from the arena centre) and which one is lit at step n.
+function ST.lanternSpots(def)
+	local L = def and def.lanterns
+	if not L then return {} end
+	local out = {}
+	for i = 1, L.count do
+		local a = (i - 1) * 2 * math.pi / L.count + math.pi / 4
+		out[i] = {x = math.cos(a) * L.ring, z = math.sin(a) * L.ring}
+	end
+	return out
+end
+function ST.litLantern(seed, n, count, previous)
+	count = math.max(1, whole(count))
+	local x = lcg((whole(seed) * 131 + whole(n) * 977) % 2147483647)
+	local i = x % count + 1
+	if i == previous then i = i % count + 1 end -- the light always moves
+	return i
+end
+-- In the light: flat distance from the lit lantern (dx, dz from the centre).
+function ST.inLight(def, lit, dx, dz)
+	local L = def and def.lanterns
+	if not L then return true end
+	local spot = ST.lanternSpots(def)[whole(lit)]
+	if not spot then return false end
+	local x, z = dx - spot.x, dz - spot.z
+	return math.sqrt(x * x + z * z) <= L.radius
+end
+-- Custom telegraph geometry. tg = {cx, cz (origin), ux, uz (unit direction)}.
+function ST.struck(a, tg, x, z)
+	local dx, dz = x - tg.cx, z - tg.cz
+	local along = dx * tg.ux + dz * tg.uz
+	local across = -dx * tg.uz + dz * tg.ux
+	if a.kind == "cross" then
+		local half, reach = a.width / 2, a.length / 2
+		return (math.abs(across) <= half and math.abs(along) <= reach) or (math.abs(along) <= half and math.abs(across) <= reach)
+	elseif a.kind == "beam" then
+		return along >= 0 and along <= a.length and math.abs(across) <= a.width / 2
+	elseif a.kind == "half" then
+		return along > 0
+	end
+	return false
+end
+ST.CUSTOM_TELEGRAPH = {cross = true, beam = true, half = true}
+-- Direction of a custom telegraph: cross / half seeded by the step, beam toward the victim.
+function ST.telegraphAngle(seed, step)
+	local x = lcg((whole(seed) * 37 + whole(step) * 7907) % 2147483647)
+	return (x % 360) * math.pi / 180
+end
+
+------------------------------------------------------------------------------
+-- Rewards: unique untradeable items (value 1: never a coin path).
+------------------------------------------------------------------------------
+local function item(id, def)
+	def.id = id
+	def.untradeable = true
+	def.value = 1
+	def.story = true
+	Data.Items[id] = def
+	return def
+end
+item("BrassboundSignet",{name="Brassbound Signet",kind="accessory",rarity="Rare",color="D4A84B",stats={defense=6,miningFortune=4},
+	description="Dagna's vault key, cut down to a ring. The Quarry remembers who opened it. (The Sundered Sky)"})
+item("WickglassLantern",{name="Wickglass Lantern",kind="accessory",rarity="Rare",color="FFD166",stats={intelligence=8,defense=3},
+	description="A lantern that never quite goes out. Something small and grateful lives in the wick. (The Sundered Sky)"})
+item("StarchartMonocle",{name="Star-Chart Monocle",kind="accessory",rarity="Epic",color="BFE3FF",stats={critChance=1,magicFind=1},
+	description="Ivo's spare lens, etched with the true sky. (The Sundered Sky)"})
+item("StormglassPendant",{name="Stormglass Pendant",kind="accessory",rarity="Epic",color="8FB8FF",stats={strength=6,speed=2},
+	description="A shard of the Regent's crown, still faintly humming. (The Sundered Sky)"})
+item("ShoalLightCharm",{name="Shoal-Light Charm",kind="accessory",rarity="Epic",color="7FE0E8",stats={fishingFortune=6,seaCreatureChance=1},
+	description="A sliver of the signal lens, polished by Orla's own sleeve. (The Sundered Sky)"})
+item("LoomwardenMantle",{name="Loomwarden's Mantle",kind="accessory",rarity="Legendary",color="D8B4FF",stats={health=20,defense=8,intelligence=8},
+	description="Woven from the thread you mended. The sky knows its weaver. (The Sundered Sky)"})
+for id in pairs({BrassboundSignet=1,WickglassLantern=1,StarchartMonocle=1,StormglassPendant=1,ShoalLightCharm=1,LoomwardenMantle=1}) do
+	for stat in pairs(Data.Items[id].stats) do assert(Data.Stats[stat] ~= nil, id .. " stat " .. stat) end
+end
+
+------------------------------------------------------------------------------
+-- Cutscenes: camera shots between anchors (Anchor_<at> / Anchor_<look> under
+-- Workspace.Islands, or the player when missing), a dialogue card and an
+-- optional NPC gesture. Cosmetic only; skippable; capped by ST.CUTSCENE_MAX.
+------------------------------------------------------------------------------
+local function shot(at, look, dur, speaker, line, gesture, off)
+	return {at = at, look = look, dur = dur, speaker = speaker, line = line, gesture = gesture, off = off}
+end
+ST.Cutscenes = {
+	c1_intro={title="A Tear in the Sky",chapter=1,shots={
+		shot("NPC_StoryArchivist","NPC_StoryArchivist",4.5,"StoryArchivist","Look at this chart. Then look up. The sky over Sunwheel Downs is coming apart at the seams, thread by thread.","point",{x=6,y=4,z=-8}),
+		shot("Story_SkyTear","Story_SkyTear",4.5,"Narrator","Far to the west, over the wheat, the air ripples like cloth caught on a nail.",nil,{x=-10,y=10,z=12}),
+		shot("NPC_StoryArchivist","NPC_StoryArchivist",4,"StoryArchivist","Find Brannick Tallow, the hedge-miller. He's watched it longest.","wave",{x=4,y=3,z=-6})}},
+	c1_tear={title="The Thread Beneath",chapter=1,shots={
+		shot("Story_SkyTear","Story_SkyTear",4.5,"Narrator","The wheat bows. Through the tear, for one heartbeat, you see a golden thread pulled taut across the sky.",nil,{x=8,y=6,z=8}),
+		shot("Story_SkyTear","Story_SkyTear",4,"Caedmon","Another one finds the seam. How tiresome. Go home, little wayfarer. The loom is not for you.",nil,{x=-4,y=14,z=-4})}},
+	c2_vault={title="The Brassbound Vault",chapter=2,shots={
+		shot("Story_BrassVault","Story_BrassVault",4,"StoryQuarrymaster","Four dials. Four runes. Lock held three hundred years and you cracked it before the bell. Hmph.","point",{x=0,y=5,z=-12}),
+		shot("Story_BrassVault","Story_BrassVault",4.5,"Narrator","Inside: a loom-shuttle of brass and starlight, and a page in the Archivist's own hand.",nil,{x=3,y=3,z=-5})}},
+	c3_gloam={title="Gloamwick's Hollow",chapter=3,shots={
+		shot("NPC_StoryWick","NPC_StoryWick",4,"StoryWick","...it's in there. ...the thing that ate my light. ...keep to the lanterns. It can't touch what's lit.","raise",{x=4,y=3,z=-6}),
+		shot("Story_GloamGate","Story_GloamGate",4,"Narrator","Beyond the gate, the dark has teeth.",nil,{x=0,y=6,z=-14})}},
+	c3_light={title="A Wick Rekindled",chapter=3,shots={
+		shot("NPC_StoryWick","NPC_StoryWick",4.5,"StoryWick","...I remember now. I was the Archive's lamp. He put me out so no one could read by me. ...Caedmon.","bow",{x=3,y=3,z=-5})}},
+	c4_salt={title="The Salt Road",chapter=4,shots={
+		shot("NPC_StoryCaptain","NPC_StoryCaptain",4.5,"StoryCaptain","You flew her in yourself? Ha! Then you've earned the truth: the trade winds are tearing too. Something's cutting them.","point",{x=5,y=3,z=-7}),
+		shot("NPC_StoryCaptain","NPC_StoryCaptain",4,"StoryCaptain","Bring me lanternrays. Their glow reads the wind's wounds better than any compass.","wave",{x=-5,y=3,z=-6})}},
+	c5_stars={title="The True Sky",chapter=5,shots={
+		shot("Story_Astrolabe","Story_Astrolabe",4.5,"StoryStargazer","Aligned! Look, look! Every star of the old sky points to one place: the Crown. The Loom was never lost. It was hidden.","raise",{x=6,y=5,z=-6}),
+		shot("Story_Astrolabe","Story_Astrolabe",4,"Narrator","The rings settle. In their light, a woven map of the isles hangs in the air, and one bright thread runs to the Spire.",nil,{x=-2,y=12,z=-2})}},
+	c6_regent={title="The Stormglass Regent",chapter=6,shots={
+		shot("NPC_StoryStormward","NPC_StoryStormward",4,"StoryStormward","The Regent guarded the Spire's thread for an age. Now it guards whatever Caedmon told it to. Break its conduits first.","point",{x=4,y=3,z=-6}),
+		shot("Story_RegentGate","Story_RegentGate",4,"Caedmon","You again. Very well. Let the storm teach you what I could not.",nil,{x=0,y=10,z=-16})}},
+	c7_light={title="The Shoal Light Burns",chapter=7,shots={
+		shot("Story_MirrorField","Story_MirrorField",4.5,"Narrator","The beam leaps mirror to mirror and strikes the old lens. The Shoal Light blazes across every isle at once.",nil,{x=10,y=12,z=10}),
+		shot("NPC_StoryCaptain","NPC_StoryCaptain",4,"StoryCaptain","That's the signal the Loomwrights used. If anyone's left at the Crown, they've seen it. Go.","wave",{x=4,y=3,z=-6})}},
+	c8_sunderer={title="The Sundering Loom",chapter=8,shots={
+		shot("NPC_StoryLoomwright","NPC_StoryLoomwright",4,"StoryLoomwright","He is at the Loom. Three threads still hold the sky to itself. Do not let him cut the last.","raise",{x=4,y=3,z=-6}),
+		shot("Story_SunderGate","Story_SunderGate",4.5,"Caedmon","I read every page of the Archive, wayfarer. The sky is a draft. I am merely revising it.",nil,{x=0,y=10,z=-16})}},
+	c8_mended={title="The Sky Made Whole",chapter=8,shots={
+		shot("Story_Loomheart","Story_Loomheart",4.5,"StoryLoomwright","The thread holds. The isles will drift, as isles do, but they will never again fall apart.","bow",{x=6,y=6,z=-6}),
+		shot("NPC_StoryArchivist","NPC_StoryArchivist",4.5,"StoryArchivist","I'll have to rewrite every chart in the Archive. ...Good. Let's start with your name on the first page.","bow",{x=4,y=3,z=-6})}},
+}
+ST.CutsceneOrder = {"c1_intro","c1_tear","c2_vault","c3_gloam","c3_light","c4_salt","c5_stars","c6_regent","c7_light","c8_sunderer","c8_mended"}
+for _, id in ipairs(ST.CutsceneOrder) do
+	local c = ST.Cutscenes[id]
+	c.id = id
+	local total = 0
+	for _, s in ipairs(c.shots) do total += s.dur end
+	c.total = math.min(total, ST.CUTSCENE_MAX)
+end
+-- The cutscene runner (story.client.lua drives it; tests run it headless).
+-- run = {id, started, deadline, shot, ended, reason}.
+function ST.cutStart(id, now)
+	local c = ST.Cutscenes[id]
+	if not c then return nil end
+	return {id = id, started = now, deadline = now + c.total + ST.CUTSCENE_GRACE, shot = 1, shotEnds = now + c.shots[1].dur, ended = false}
+end
+-- ev = {skip, dead, teleported, hurt, missing (no character)}; returns run, ended.
+function ST.cutStep(run, now, ev)
+	if not run or run.ended then return run, true end
+	ev = tab(ev)
+	local reason = (ev.skip and "skip") or (ev.dead and "dead") or (ev.teleported and "teleport") or (ev.hurt and "hurt") or (ev.missing and "missing")
+		or (now >= run.deadline and "deadline") or nil
+	local c = ST.Cutscenes[run.id]
+	while not reason and now >= run.shotEnds do
+		run.shot += 1
+		local s = c.shots[run.shot]
+		if not s then reason = "done" break end
+		run.shotEnds += s.dur
+	end
+	if reason then run.ended, run.reason = true, reason end
+	return run, run.ended
+end
+
+------------------------------------------------------------------------------
+-- Chapters.
+------------------------------------------------------------------------------
+local function talk(npc, text, ask, lines, reply) return {kind = "talk", npc = npc, text = text, ask = ask, lines = lines, reply = reply} end
+ST.Chapters = {
+	{id="Tear",title="A Tear in the Sky",regions={"Hub","Meadow"},giver="StoryArchivist",
+		blurb="The sky over Sunwheel Downs is fraying. Sefa Lumenward, the Skyward Archivist, wants a witness.",
+		requires={{kind="contracts",count=2}},
+		steps={
+			talk("StoryArchivist","Speak to Sefa Lumenward in the Compass Quay archive","Story: the fraying sky",
+				"I've charted these isles for twenty years and never drawn a hole in the sky. Now there's one over Sunwheel Downs. I need eyes there, and mine are full of ink.","I'll be your eyes."),
+			{kind="talk",npc="StoryMiller",text="Find Brannick Tallow, the hedge-miller in Sunwheel Downs",ask="Story: Sefa sent me",
+				lines="Sefa's charts, eh? Hah. The tear comes and goes like a cough. Wheat calms it, odd as that sounds. Bring me a sheaf's worth and we'll go look.",reply="I'll bring the sunwheat.",cut="c1_intro"},
+			{kind="collect",item="Sunwheat",count=20,text="Harvest 20 Sunwheat (strike the crops)"},
+			{kind="inspect",pieces={"SkyTear"},text="Inspect the fraying sky beyond the Sunwheel Mill"},
+			talk("StoryArchivist","Report back to Sefa Lumenward","Story: what I saw",
+				"A thread. A golden thread, under the sky. And a voice. ...I know that voice. It taught me to read. Caedmon Ashveil, the Archive's old master.","Who is he?"),
+		},
+		cutOnStep={[5]="c1_tear"},
+		rewards={points=1,lamps={{rate=12}},coins=0}},
+	{id="Vault",title="The Brassbound Vault",regions={"Quarry"},giver="StoryQuarrymaster",
+		blurb="Caedmon's trail runs to a sealed vault under Brassfall Cay, locked by four runes.",
+		requires={{kind="level",skill="Mining",level=20},{kind="level",skill="Runebinding",level=10},{kind="level",skill="Smithing",level=15}},
+		steps={
+			talk("StoryQuarrymaster","Speak to Quarrymaster Dagna Holt at Brassfall Cay","Story: the sealed vault",
+				"The old vault? Sealed since my grandmother's grandmother. Brass hinges are seized. Smelt me fresh ingots for the shoring and I'll let you at the stones.","Deal."),
+			{kind="craft",item="BrassIngot",count=5,text="Smelt 5 Brass Ingots at a Forge"},
+			{kind="inspect",pieces={"GlyphStone1","GlyphStone2","GlyphStone3","GlyphStone4"},text="Take rubbings of the four glyph stones around the quarry"},
+			{kind="puzzle",puzzle="runelock",text="Set the four rune dials of the Brassbound Vault (carry one of each rune)"},
+			talk("StoryQuarrymaster","Show Dagna what was in the vault","Story: the vault is open",
+				"A loom-shuttle. Brass and starlight. My grandmother said the isles were sewn, not grown. Thought it was a bedtime story. Take it to Sefa. And take this.","Thank you, Quarrymaster."),
+		},
+		cutOnStep={[5]="c2_vault"},
+		rewards={points=2,lamps={{rate=16}},items={BrassboundSignet=1}}},
+	{id="Lanterns",title="Lanterns Below",regions={"Windpine","Gloomhollow"},giver="StorySeer",
+		blurb="The shuttle hums toward the deep dark under Gloomhollow, where something has been eating the light.",
+		requires={{kind="level",skill="Woodcutting",level=30},{kind="level",skill="Beaconry",level=30},{kind="level",skill="Mining",level=30},{kind="level",skill="Combat",level=35}},
+		steps={
+			talk("StorySeer","Speak to Thessaly Moss, the Grove-Seer of Windpine","Story: the humming shuttle",
+				"The shuttle sings of the hollows below. Before you descend, wake the canopy fire, so the grove may watch your back. Light carries further than you think.","I'll wake the beacon."),
+			{kind="beacon",beacon="Windpine",text="Light (or warm yourself at) the Canopy Beacon in Windpine Grove"},
+			{kind="talk",npc="StoryWick",text="Find the lantern-child in Gloomhollow Caverns",ask="Story: are you Wick?",
+				lines="...you came down by the canopy fire. ...I saw it. ...there's a thing in the hollow that eats light. It ate mine. Thin the spiders first, they're its eyes.",reply="I'll deal with its eyes."},
+			{kind="kills",monster="GloomfangSpider",count=8,text="Defeat 8 Gloomfang Spiders"},
+			{kind="boss",boss="Gloamwick",text="Enter Gloamwick's Hollow and defeat Gloamwick, the Lantern Eater",cut="c3_gloam"},
+			talk("StoryWick","Return to Wick","Story: Gloamwick is gone",
+				"...it's bright. ...it's so bright. Here. Take my old lantern. ...I'll make a new one. I'm good at that now.","Keep shining, Wick."),
+		},
+		cutOnStep={[6]="c3_light"},
+		rewards={points=2,lamps={{rate=22}},items={WickglassLantern=1}}},
+	{id="Salt",title="The Salt Road",regions={"Hub","Tidewater"},giver="StoryArchivist",
+		blurb="Wick remembers a name. Sefa needs word carried to the one captain who still flies the old trade winds.",
+		requires={{kind="level",skill="Skysailing",level=35},{kind="level",skill="Fishing",level=35}},
+		steps={
+			talk("StoryArchivist","Speak to Sefa Lumenward","Story: Wick remembered Caedmon",
+				"Caedmon put out the Archive's lamp so no one could read his work. Then he left. Captain Orla Strand flew him out, years ago. Fly to Tidewater yourself, and ask her where.","I'll take my own ship."),
+			{kind="sail",port="Tidewater",text="Sail your own airship and dock at the Tidewater Skydock"},
+			{kind="talk",npc="StoryCaptain",text="Speak to Captain Orla Strand at Tidewater",ask="Story: Sefa sent me by air",
+				lines="Caedmon? Paid in starlight, never smiled, made my compass spin backwards the whole flight. Dropped him at the Spire's foot. The winds have been wrong ever since.",reply="What's wrong with the winds?",cut="c4_salt"},
+			{kind="collect",item="Lanternray",count=15,text="Catch 15 Lanternrays"},
+			talk("StoryCaptain","Bring the lanternrays to Captain Orla","Story: the lanternrays",
+				"See how they flicker north-east? Toward Skyreach. Something up there is pulling the winds. Star-folk live up there. Odd lot. Go ask them.","To Skyreach, then."),
+		},
+		rewards={points=2,lamps={{rate=26}}}},
+	{id="Stars",title="Charts of a Fallen Sky",regions={"Skyreach"},giver="StoryStargazer",
+		blurb="The Sunken Observatory's Great Astrolabe once held the shape of the true sky.",
+		requires={{kind="contracts",count=6},{kind="level",skill="Runebinding",level=25},{kind="level",skill="Combat",level=30}},
+		steps={
+			talk("StoryStargazer","Speak to Ivo Penhallow at the Sunken Observatory","Story: the winds point here",
+				"Winds? Pulled? Oh, oh, that's the astrolabe! It's been out of true since the stars moved. Stars don't move! Well. These did. I need storm feathers for the bearings.","Feathers it is."),
+			{kind="collect",item="StormFeather",count=12,text="Collect 12 Storm Feathers"},
+			{kind="puzzle",puzzle="stars",text="Align the five rings of the Great Astrolabe"},
+			talk("StoryStargazer","Speak to Ivo about the aligned sky","Story: the astrolabe is aligned",
+				"The Loom! The Sky-Loom! Every star points at the Crown, and one thread runs through the Spire. Take my spare monocle. You'll need to see true where you're going.","Thank you, Ivo."),
+		},
+		cutOnStep={[4]="c5_stars"},
+		rewards={points=2,lamps={{rate=30}},items={StarchartMonocle=1}}},
+	{id="Regent",title="The Stormglass Regent",regions={"Tempest"},giver="StoryStormward",
+		blurb="The Spire's thread is guarded by a drake of living stormglass that no longer answers to the Wardens.",
+		requires={{kind="level",skill="Combat",level=50},{kind="questPoints",count=12}},
+		steps={
+			talk("StoryStormward","Speak to Rhosyn Gale, the Storm-Warden of Tempest Spire","Story: the Spire's thread",
+				"The Regent answered to the Wardens for a thousand storms. Then a man in grey spoke to it, and it stopped answering. Clear the wraiths that feed its squall.","Understood, Warden."),
+			{kind="kills",monster="TempestWraith",count=10,text="Defeat 10 Tempest Wraiths"},
+			{kind="boss",boss="Vaelith",text="Enter the Regent's Eyrie and defeat Vaelith, the Stormglass Regent",cut="c6_regent"},
+			talk("StoryStormward","Return to Rhosyn Gale","Story: the Regent has fallen",
+				"It is quiet. I have not heard the Spire quiet in my lifetime. Wear this shard of its crown; the storms will know you. And be careful: the light at the Shoals has gone dark too.","I'll see to the Shoals."),
+		},
+		rewards={points=3,lamps={{rate=36},{rate=36}},items={StormglassPendant=1}}},
+	{id="Shoal",title="The Shoal Light",regions={"Tidewater"},giver="StoryCaptain",
+		blurb="The Loomwrights once called each other with the Shoal Light. Relight it, and anyone left at the Crown will know.",
+		requires={{kind="level",skill="Fishing",level=45},{kind="level",skill="Skysailing",level=40}},
+		steps={
+			talk("StoryCaptain","Speak to Captain Orla Strand","Story: the Shoal Light",
+				"That old lighthouse? Lens cracked the night the winds went wrong. The mirrors in the field still turn. Find the lens, then bend the beam home.","Let's light it."),
+			{kind="inspect",pieces={"ShoalLens"},text="Inspect the cracked signal lens by the Shoal Light"},
+			{kind="puzzle",puzzle="mirrors",text="Turn the signal mirrors until the beam reaches the lens"},
+			talk("StoryCaptain","Return to Captain Orla","Story: the light is burning",
+				"Every deck from here to the Crown just saw that. Take this, from the lens. And go: someone at the Crown just lit a lamp back.","I'm going."),
+		},
+		cutOnStep={[4]="c7_light"},
+		rewards={points=2,lamps={{rate=40}},items={ShoalLightCharm=1}}},
+	{id="Sunder",title="The Sundered Sky",regions={"Hub","ShatteredCrown"},giver="StoryArchivist",
+		blurb="Caedmon Ashveil has reached the Sky-Loom. Three threads still hold the isles together.",
+		requires={{kind="quest",quest="CrownOfTempest"},{kind="level",skill="Combat",level=60},{kind="level",skill="Runebinding",level=40},{kind="level",skill="Skysailing",level=45},{kind="questPoints",count=30}},
+		steps={
+			talk("StoryArchivist","Speak to Sefa Lumenward","Story: the Loom is at the Crown",
+				"He taught me that every map is a promise. He's breaking all of them at once. I can't fight him. You can. Go to the Crown, and bring him back if you can. Stop him if you can't.","I'll stop him."),
+			{kind="talk",npc="StoryLoomwright",text="Find the last Loomwright at the Shattered Crown",ask="Story: Sefa sent me",
+				lines="I am Oriane, last of those who wove this sky. Three threads remain. Mend them, and he cannot cut the sky free in one stroke. Then face him at the Loom.",reply="I'll mend the threads."},
+			{kind="inspect",pieces={"LoomThread1","LoomThread2","LoomThread3"},text="Mend the three frayed sky-threads on the Shattered Crown"},
+			{kind="boss",boss="Caedmon",text="Enter the Sundering Loom and defeat Caedmon Ashveil, the Sunderer",cut="c8_sunderer"},
+			talk("StoryLoomwright","Return to Oriane Duskmere","Story: Caedmon is defeated",
+				"He sleeps, bound in his own unwoven thread. One day he may wake wiser. The Loomheart is yours to walk now: it will carry you home and back.","Thank you, Loomwright."),
+			talk("StoryArchivist","Return to Sefa Lumenward at Compass Quay","Story: the sky is whole",
+				"Sit. Tell me all of it, slowly. ...No, wait. Let me get more ink.","(Tell her everything.)"),
+		},
+		cutOnStep={[6]="c8_mended"},
+		rewards={points=4,lamps={{rate=44},{rate=44}},items={LoomwardenMantle=1},unlock={warp="Loomheart"}}},
+}
+ST.ChapterById = {}
+for i, ch in ipairs(ST.Chapters) do
+	ch.index = i
+	ST.ChapterById[ch.id] = ch
+	for j, s in ipairs(ch.steps) do
+		s.index = j
+		if s.cut == nil and ch.cutOnStep then s.cut = ch.cutOnStep[j] end
+	end
+end
+-- The unlocked fast-travel node.
+ST.Warps = {
+	Loomheart = {id = "Loomheart", name = "Loomheart Terrace", anchor = "Story_Loomheart", region = "ShatteredCrown"},
+	Quay = {id = "Quay", name = "the Loomstone on Compass Quay", anchor = "Story_QuayLoom", region = "Hub"},
+}
+
+------------------------------------------------------------------------------
+-- Progress (p.story) and its pure rules.
+--   {v, ch (1..#Chapters+1), step (1..#steps), base (lifetime count at step
+--    start), marks {[piece]=true}, puzzle {id, s}, lamps {{rate}}, cut {id, seq},
+--    seq, lockUntil, tries}
+------------------------------------------------------------------------------
+function ST.migrate(raw)
+	local src = tab(raw)
+	local n = #ST.Chapters
+	local out = {v = ST.VERSION, ch = math.clamp(whole(src.ch), 1, n + 1), step = 1, base = 0, marks = {}, lamps = {}, seq = math.max(0, whole(src.seq)), tries = math.max(0, whole(src.tries))}
+	if src.ch == nil then out.ch = 1 end
+	local ch = ST.Chapters[out.ch]
+	if ch then out.step = math.clamp(whole(src.step), 1, #ch.steps) end
+	out.base = math.max(0, whole(src.base))
+	local step = ch and ch.steps[out.step]
+	if step and step.kind == "inspect" then
+		for piece, v in pairs(tab(src.marks)) do if v == true and table.find(step.pieces, piece) then out.marks[piece] = true end end
+	end
+	if step and step.kind == "puzzle" then
+		local pz = tab(src.puzzle)
+		if pz.id == step.puzzle and type(pz.s) == "table" then
+			local clean = {id = pz.id, s = {}}
+			if pz.id == "runelock" then
+				for i = 1, ST.DIALS do local r = pz.s[i]; clean.s[i] = if type(r) == "string" and table.find(ST.RUNES, r) then r else "" end
+			elseif pz.id == "stars" then
+				for i = 1, ST.RINGS do clean.s[i] = whole(pz.s[i]) % ST.STOPS end
+			else
+				for i = 1, #ST.Mirror.mirrors do clean.s[i] = if whole(pz.s[i]) == 1 then 1 else 0 end
+			end
+			out.puzzle = clean
+		end
+	end
+	for _, l in ipairs(tab(src.lamps)) do
+		local rate = whole(tab(l).rate)
+		if rate > 0 and rate <= 100 and #out.lamps < ST.MAX_LAMPS then table.insert(out.lamps, {rate = rate}) end
+	end
+	local cut = tab(src.cut)
+	if type(cut.id) == "string" and ST.Cutscenes[cut.id] then out.cut = {id = cut.id, seq = whole(cut.seq)} end
+	out.lockUntil = math.max(0, whole(src.lockUntil))
+	return out
+end
+function ST.done(prog) return whole(tab(prog).ch) > #ST.Chapters end
+function ST.points(prog)
+	local total = 0
+	for i = 1, math.min(#ST.Chapters, whole(tab(prog).ch) - 1) do total += ST.Chapters[i].rewards.points or 0 end
+	return total
+end
+function ST.maxPoints()
+	local total = 0
+	for _, ch in ipairs(ST.Chapters) do total += ch.rewards.points or 0 end
+	return total
+end
+function ST.current(prog)
+	prog = tab(prog)
+	local ch = ST.Chapters[whole(prog.ch)]
+	if not ch then return nil, nil end
+	return ch, ch.steps[math.clamp(whole(prog.step), 1, #ch.steps)]
+end
+-- XP from one lamp at a skill level (level-scaled, like a genie's lamp).
+function ST.lampXp(rate, lvl)
+	return math.floor(whole(rate) * math.clamp(whole(lvl), 1, 99) * 1.5)
+end
+-- Cutscenes this journal may replay (every cutscene of a step already reached).
+function ST.unlockedCutscenes(prog)
+	prog = tab(prog)
+	local out = {}
+	for i, ch in ipairs(ST.Chapters) do
+		for j, s in ipairs(ch.steps) do
+			if s.cut and (i < whole(prog.ch) or (i == whole(prog.ch) and j <= whole(prog.step))) then table.insert(out, s.cut) end
+		end
+	end
+	return out
+end
+-- Waypoint specs for a step (Data.Townsfolk target specs; §33 helper).
+function ST.specsFor(step, ctx)
+	if type(step) ~= "table" then return nil end
+	local k = step.kind
+	if k == "talk" then return {"npc:" .. step.npc} end
+	if k == "inspect" then
+		local out = {}
+		local marks = tab(tab(ctx).marks)
+		for _, piece in ipairs(step.pieces) do if not marks[piece] then table.insert(out, "anchor:Story_" .. piece) end end
+		return if #out > 0 then out else nil
+	end
+	if k == "puzzle" then return {"anchor:Story_" .. ST.Puzzles[step.puzzle].piece} end
+	if k == "boss" then
+		for _, p in ipairs(ST.Pieces) do if p.boss == step.boss then return {"anchor:Story_" .. p.id, "region:" .. p.region} end end
+	end
+	if k == "kills" then return {"monster:" .. step.monster} end
+	if k == "sail" then return {"anchor:Dock_" .. step.port} end
+	if k == "beacon" then local B = Data.Beaconry and Data.Beaconry.Beacons[step.beacon]; return {"region:" .. (if B then B.region else step.beacon)} end
+	local HP = Data.Systems and Data.Systems.Helper
+	if (k == "collect" or k == "craft") and HP and HP.specsFor then
+		local ok, specs = pcall(HP.specsFor, {kind = if k == "craft" then "craft" else "collect", item = step.item, count = step.count}, {access = tab(ctx).access})
+		if ok then return specs end
+	end
+	return nil
+end
+-- One line per step for the Journal and the sidebar.
+function ST.stepText(step, have, need)
+	if type(step) ~= "table" then return "" end
+	local t = step.text or ""
+	if whole(need) > 1 then t ..= " (" .. math.min(whole(have), whole(need)) .. "/" .. whole(need) .. ")" end
+	return t
+end
+-- §33 quest-helper guide for the story (server and client share it).
+-- cur = {ch, step, have, need, reqs = {{text, met}}, marks}
+function ST.guide(cur, ctx)
+	cur = tab(cur)
+	local ch = ST.Chapters[whole(cur.ch)]
+	if not ch then return nil end
+	local g = {id = "story", kind = "story", title = ST.TITLE .. " · " .. ch.index .. ". " .. ch.title, steps = {}}
+	local started = whole(cur.step) > 1
+	if not started then
+		for _, r in ipairs(tab(cur.reqs)) do
+			table.insert(g.steps, {text = tostring(r.text), have = if r.met then 1 else 0, need = 1, met = r.met == true, phase = "requires"})
+		end
+	end
+	for j, s in ipairs(ch.steps) do
+		local done = j < whole(cur.step)
+		local here = j == whole(cur.step)
+		local have, need = if done then 1 else 0, 1
+		if here and whole(cur.need) > 1 then have, need = whole(cur.have), whole(cur.need) end
+		table.insert(g.steps, {text = s.text, have = have, need = need, met = done, phase = "task",
+			specs = if here then ST.specsFor(s, {marks = cur.marks, access = tab(ctx).access}) else nil, npc = s.npc})
+	end
+	g.total = #g.steps
+	for i, s in ipairs(g.steps) do if not s.met then g.current = i break end end
+	g.current = g.current or g.total
+	g.status = if not started and g.steps[g.current].phase == "requires" then "locked" else "active"
+	return g
+end
+
+------------------------------------------------------------------------------
+-- The cast as regional folk: dialogue nodes, conditions, tips (Townsfolk).
+------------------------------------------------------------------------------
+if T and RA and RA.Folk and T.NPCs then
+	-- snapshot story.cur = {ch, step, kind, npc, ready}
+	local function cur(s) return tab(tab(tab(s).story).cur) end
+	local storyItems = {}
+	T.Verbs.storyTalk = {item = storyItems}
+	local LORE = {
+		StoryArchivist="The Archive keeps every chart ever drawn of these isles. Caedmon Ashveil kept it before me. He taught me that a map is a promise. I've started to wonder what he promised.",
+		StoryMiller="Forty harvests on this hill. Wheat, weather, and wind. You learn to hear when one of them's lying. Lately it's all three.",
+		StoryQuarrymaster="Brassfall's been dug since before the guild. We don't dig for ore anymore. We dig for what the old folk buried with it.",
+		StorySeer="Every pine here is a word in a very long sentence. I have read eleven of them. It is a love letter, I think, to the sky.",
+		StoryWick="...I was bright once. ...I lit pages. ...words. ...he didn't want them read. ...that's all I remember. ...for now.",
+		StoryCaptain="Thirty years flying the trade winds. Lost two ships to squalls, none to fools. Don't make me start a new count.",
+		StoryStargazer="The Observatory sank the night the stars slipped. Everyone says it fell. It didn't! It ducked! Something frightened it.",
+		StoryStormward="The Wardens hold the Spire against the storm, and the storm against the isles. We are fewer each year. We do not complain.",
+		StoryLoomwright="We wove the isles into one sky, long ago, so they would not drift apart into nothing. It was not meant to be undone.",
+	}
+	for _, c in ipairs(ST.Cast) do
+		storyItems[c.role] = true
+		local folk = {role = c.role, region = c.region, name = c.name, title = c.title, portrait = c.portrait, kind = "story", look = c.look, greet = c.greet}
+		table.insert(RA.Folk, folk)
+		RA.FolkByRole[c.role] = folk
+		local hello = {}
+		local nodes = {}
+		-- One node per talk step of this NPC, offered only while that step is current.
+		for _, ch in ipairs(ST.Chapters) do
+			for _, s in ipairs(ch.steps) do
+				if s.kind == "talk" and s.npc == c.role then
+					local nodeId = "c" .. ch.index .. "s" .. s.index
+					local condId = "story_" .. nodeId
+					local chi, si = ch.index, s.index
+					T.Conditions[condId] = function(snap)
+						local x = cur(snap)
+						return x.ch == chi and x.step == si and x.kind == "talk" and x.npc == c.role and (si > 1 or x.ready == true)
+					end
+					table.insert(hello, {label = s.ask, to = nodeId, when = condId})
+					nodes[nodeId] = {text = s.lines, options = {
+						{label = s.reply, verb = "storyTalk", item = c.role},
+						{label = "Not yet", to = "hello"},
+						{label = "Farewell", close = true}}}
+				end
+			end
+		end
+		table.insert(hello, {label = "What's my next step?", tip = "story"})
+		table.insert(hello, {label = "Tell me about yourself", to = "lore"})
+		table.insert(hello, {label = "Farewell", close = true})
+		nodes.hello = {text = c.greet, options = hello}
+		nodes.lore = {text = LORE[c.role], options = {{label = "Back", to = "hello"}, {label = "Farewell", close = true}}}
+		T.NPCs[c.role] = {name = c.name, title = c.title, region = c.region, portrait = c.portrait, look = c.look, start = "hello", anchorOnly = true, folk = "story", nodes = nodes}
+		table.insert(T.RegionFolkOrder, c.role)
+	end
+	T.Tips.story = function(snap)
+		local st = tab(tab(snap).story)
+		if st.done then return "The Sundered Sky is complete. The Loomheart will carry you between the Crown and the Quay." end
+		local x = tab(st.cur)
+		local ch = ST.Chapters[whole(x.ch)]
+		if not ch then return "Your story journal is still syncing." end
+		local head = ST.TITLE .. ", chapter " .. ch.index .. ": " .. ch.title .. ". "
+		if not x.ready and whole(x.step) <= 1 then
+			local missing = {}
+			for _, r in ipairs(tab(x.reqs)) do if not r.met then table.insert(missing, tostring(r.text)) end end
+			return head .. "You'll need: " .. table.concat(missing, ", ") .. "."
+		end
+		return head .. tostring(x.text or "")
+	end
+end
+-- §33 quest helper: the story is pinnable as "story"; §31 toasts: "story" announcements.
+do
+	local HP = Data.Systems and Data.Systems.Helper
+	if HP and HP.validPin then
+		local validPin = HP.validPin
+		function HP.validPin(id) if id == "story" then return true end return validPin(id) end
+	end
+	local F = Data.Features
+	if F and F.announceText then
+		local announceText = F.announceText
+		function F.announceText(e)
+			if type(e) == "table" and e.kind == "story" then
+				return {head = "CHAPTER COMPLETE", body = tostring(e.title or ST.TITLE) .. (if whole(e.points) > 0 then "  ·  +" .. whole(e.points) .. " Quest Points" else ""), color = "D8B4FF"}
+			end
+			return announceText(e)
+		end
+	end
+end
+end
+-- <<< END Story <<<
+------------------------------------------------------------------------------
+
 return Data

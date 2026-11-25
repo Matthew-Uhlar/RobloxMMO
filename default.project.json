@@ -37,7 +37,8 @@
       "Beaconry": { "$path": "beaconry.server.lua" },
       "Raids": { "$path": "raids.server.lua" },
       "Weather": { "$path": "weather.server.lua" },
-      "Skysailing": { "$path": "sailing.server.lua" }
+      "Skysailing": { "$path": "sailing.server.lua" },
+      "Story": { "$path": "story.server.lua" }
     },
     "StarterPlayer": {
       "StarterPlayerScripts": {
@@ -66,7 +67,8 @@
         "IsleCreatures": { "$path": "creatures.client.lua" },
         "IsleAmbience": { "$path": "ambience.client.lua" },
         "IsleRunes": { "$path": "runes.client.lua" },
-        "IsleSailing": { "$path": "sailing.client.lua" }
+        "IsleSailing": { "$path": "sailing.client.lua" },
+        "IsleStory": { "$path": "story.client.lua" }
       }
     },
     "Lighting": {

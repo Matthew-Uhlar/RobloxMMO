@@ -138,6 +138,12 @@ S.ROLES = {
 	Beaconkeeper = {trade = "firekeeper", held = "poker"}, -- Old Hesketh Ashby: pokes the embers
 	CouncilClerk = {trade = "clerk"}, ContestSteward = {trade = "clerk", hat = "straw"}, TrophyKeeper = {trade = "angler", extras = {"mantle"}},
 	RoostKeeper = {trade = "keeper", extras = {"satchel"}}, Runebinder = {trade = "runebinder", hat = "mage"}, -- Maelis Quillstone: traces glyphs
+	-- §53 The Sundered Sky cast.
+	StoryArchivist = {trade = "scholar", held = "tome", hat = "feather"}, StoryMiller = {trade = "farmer", hat = "straw", held = "crate", extras = {"scarf"}},
+	StoryQuarrymaster = {trade = "miner", hat = "minerhelm", held = "hammer", extras = {"belt"}}, StorySeer = {trade = "druid", held = "staff", hat = "hood"},
+	StoryWick = {trade = "keeper", held = "lantern", hat = "cap"}, StoryCaptain = {trade = "angler", hat = "tricorn", held = "sword", extras = {"belt"}},
+	StoryStargazer = {trade = "scholar", hat = "goggles", held = "scroll"}, StoryStormward = {trade = "guard", held = "spear", hat = "helm"},
+	StoryLoomwright = {trade = "mage", hat = "mage", held = "staff"},
 }
 -- Fallback for a role added later without an entry: a trade by its held item.
 S.HELD_TRADE = {lantern = "keeper", ledger = "clerk", crate = "merchant", hammer = "smith", sword = "guard", rod = "angler", scroll = "scholar",

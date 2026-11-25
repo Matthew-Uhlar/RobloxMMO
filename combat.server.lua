@@ -2510,7 +2510,7 @@ local function createLogic(env)
 		local def = LR and LR.boss(bossId)
 		if type(fight) ~= "string" or not def or lairFights[fight] then return nil end
 		local count = 0
-		for _, other in pairs(lairFights) do if not other.raid then count += 1 end end -- Raids section: raid encounters have their own cap
+		for _, other in pairs(lairFights) do if not other.raid and not other.story then count += 1 end end -- Raids section: raid encounters have their own cap (§53: story encounters too)
 		if count >= LR.MAX_INSTANCES then return nil end
 		opts = opts or {}
 		local now = env.now()
@@ -3139,6 +3139,150 @@ local function createLogic(env)
 		end
 	end
 	-- End Combat Feats section.
+
+	------------------------------------------------------------------------
+	-- Story section (Story team). Data.Story (ST), docs/DEPTH-CONTRACT.md §53.
+	-- A story encounter is a solo, lair-shaped record (r.lair, r.story, r.fight)
+	-- in the Lairs fight table, so the Lairs machinery runs it: stances and the
+	-- prayer check, disc / ring / safe telegraphs, adds / sigils, phases,
+	-- enrage, timeout, per-UserId damage. Story-only rules:
+	--   * its own cap (ST.MAX_FIGHTS), never counted against the lair cap;
+	--   * lanterns: the boss is "shrouded" (refusal) unless the striker stands
+	--     in the lit lantern's light; the light moves every def.lanterns.every s
+	--     (event "lantern");
+	--   * cross / beam / half telegraphs (ST.struck geometry): their direction is
+	--     set when raised (tg.ux, tg.uz) and their hits are applied here;
+	--   * the kill credits the member alive with damage > 0 (solo) and pays
+	--     damage XP; the result waits in L.lrResult for the journal.
+	------------------------------------------------------------------------
+	do
+		local ST = Data.Story
+		function L.stRegister(fight, bossId, model, position, opts)
+			local def = ST and ST.boss(bossId)
+			if type(fight) ~= "string" or not def or lairFights[fight] then return nil end
+			local live = 0
+			for _, r in pairs(lairFights) do if r.story then live += 1 end end
+			if live >= ST.MAX_FIGHTS then return nil end
+			opts = opts or {}
+			local uid = type(opts.members) == "table" and opts.members[1]
+			if type(uid) ~= "number" then return nil end
+			local now = env.now()
+			local weakness, defenceStyle = LR.weaknessAt(def, 1)
+			local center = typeof(opts.center) == "Vector3" and opts.center or position
+			local r = newRecord({
+				id = bossId, def = def, lair = true, story = true, fight = fight, name = def.name, level = def.level, maxHp = def.hp, hp = def.hp,
+				damage = def.damage, defense = def.defense, speed = def.speed, attackCooldown = LR.ATTACK_SECONDS, passive = false, provoked = true,
+				home = position, position = position, model = model, radius = math.clamp(opts.radius or 0, 0, C.MAX_RADIUS_BONUS),
+				weakness = weakness, defenceStyle = defenceStyle, attackStyle = LR.stanceAt(def, 1, 1), swings = 0,
+				phase = 1, step = 0, nextSpecial = now + 5, nextHit = now + 2.5, telegraphs = {}, adds = {}, members = {[uid] = true}, party = 1,
+				dmg = {}, started = now, enrageAt = now + def.enrage, expires = now + def.duration, lastSeen = now,
+				seed = math.floor(tonumber(opts.seed) or 1), center = center, ground = if type(opts.ground) == "number" then opts.ground else center.Y,
+				lit = nil, relightAt = now, lightStep = 0,
+			})
+			lairFights[fight] = r
+			lairResults[fight] = nil
+			return r
+		end
+		-- The shroud: nil = in the light (or no lanterns), else "shrouded".
+		function L.stShrouded(player, r)
+			if not (r and r.story and r.lair and r.def.lanterns) then return nil end
+			local pos = positionOf(player)
+			if not pos then return "shrouded" end
+			if ST.inLight(r.def, r.lit, pos.X - r.center.X, pos.Z - r.center.Z) then return nil end
+			return "shrouded"
+		end
+		local storyRefusal = L.lrRefusal
+		function L.lrRefusal(player, r)
+			local refusal = storyRefusal(player, r)
+			if refusal then return refusal end
+			return L.stShrouded(player, r)
+		end
+		local storyTick = L.lrTick
+		function L.lrTick()
+			local now = env.now()
+			local pre = {}
+			for _, r in pairs(lairFights) do
+				if r.story and r.def.lanterns and now >= r.relightAt then
+					r.lightStep += 1
+					r.lit = ST.litLantern(r.seed, r.lightStep, r.def.lanterns.count, r.lit)
+					r.relightAt = now + r.def.lanterns.every
+					table.insert(pre, {kind = "lantern", record = r, lit = r.lit})
+				end
+			end
+			local events = storyTick()
+			for _, e in ipairs(events) do
+				local r, tg = e.record, e.telegraph
+				if r and r.story and tg and ST.CUSTOM_TELEGRAPH[tg.kind] then
+					if e.kind == "telegraph" then
+						local angle = ST.telegraphAngle(r.seed, r.step + 100 * r.phase)
+						local ux, uz = math.cos(angle), math.sin(angle)
+						local origin = r.center
+						if tg.kind == "beam" then
+							local inside = L.lrPlayers(r)
+							local victim = inside[1 + math.floor(env.rng() * #inside) % math.max(1, #inside)]
+							local vpos = victim and positionOf(victim)
+							origin = r.position
+							if vpos then
+								local d = Vector3.new(vpos.X - origin.X, 0, vpos.Z - origin.Z)
+								if d.Magnitude > 0.5 then ux, uz = d.Unit.X, d.Unit.Z end
+								tg.victim = victim
+							end
+						elseif tg.kind == "cross" then
+							origin = r.position
+						end
+						tg.center = Vector3.new(origin.X, r.ground, origin.Z)
+						tg.cx, tg.cz, tg.ux, tg.uz = origin.X, origin.Z, ux, uz
+						tg.width, tg.length = tg.attack.width, tg.attack.length
+					elseif e.kind == "strike" and tg.cx then
+						for _, player in ipairs(L.lrPlayers(r)) do
+							local pos = positionOf(player)
+							if pos and ST.struck(tg.attack, tg, pos.X, pos.Z) then
+								local amount = math.floor(r.damage * tg.attack.mult)
+								lastHurt[player] = now
+								env.bridge("damage", player, {amount = amount}) -- styleless: prayers do not help
+								table.insert(e.hits, {player = player, amount = amount})
+							end
+						end
+					end
+				end
+			end
+			for _, e in ipairs(pre) do table.insert(events, e) end
+			return events
+		end
+		function L.stKill(r)
+			local now = env.now()
+			r.hp = 0
+			local credit, credited = {}, {}
+			for uid in pairs(r.members) do
+				local d = r.dmg[uid]
+				local player = onlineByUserId(uid)
+				local aliveNow = player ~= nil and env.alive(player) == true
+				local ok = d ~= nil and d.damage > 0 and aliveNow
+				credit[uid] = {share = if d then d.damage / r.maxHp else 0, damage = if d then math.floor(d.damage) else 0, ok = ok, reason = if ok then nil else (if aliveNow then "damage" else "alive")}
+				if ok then
+					table.insert(credited, player)
+					for _, style in ipairs(XP_STYLES) do
+						local dmg = d.xp[style]
+						if dmg and dmg > 0 then L.reportXp(player, r, style, dmg) end
+					end
+				end
+			end
+			r.removedAdds = lairRemove(r)
+			table.remove(r.removedAdds) -- the boss itself (its view goes with the kill)
+			lairResults[r.fight] = {result = "win", credit = credit, seconds = now - r.started, party = 1}
+			return credited
+		end
+		local storyKill = L.kill
+		function L.kill(r)
+			if r.story and r.lair and not r.lairAdd then return L.stKill(r) end
+			return storyKill(r)
+		end
+		function L.stLit(fight)
+			local r = lairFights[fight]
+			return r and r.lit or nil
+		end
+	end
+	-- End Story section.
 	return L
 end
 
@@ -3843,6 +3987,7 @@ end
 -- Telegraphs reuse the world-boss FX (telegraph / bossStrike); a tile lattice
 -- lights its charged tile parts (Neon) for the windup instead.
 DENY_REASONS.order, DENY_REASONS.lair, DENY_REASONS.sealed = true, true, true
+DENY_REASONS.shrouded = true -- §53 Story: Gloamwick cannot be struck outside the lantern light
 local LairRT = {tiles = {}, lit = {}}
 local STANCE_COLOR = {melee = Color3.fromRGB(255, 120, 110), ranged = Color3.fromRGB(150, 225, 120), magic = Color3.fromRGB(140, 170, 255)}
 local ROMAN_ORDER = {"I", "II", "III", "IV"}
@@ -3933,6 +4078,23 @@ function LairRT.finish(r)
 	LairRT.restoreTiles(r.fight)
 	if r.fight then LairRT.tiles[r.fight] = nil end -- Raids QC M1: the fight is over; its tile map goes too
 end
+-- §53 Story: lantern parts per fight ({[i] = BasePart}); the lit one glows (Neon).
+local StoryRT = {lanterns = {}}
+function StoryRT.lantern(event)
+	local r = event.record
+	local parts = r and StoryRT.lanterns[r.fight]
+	local v = view[r]
+	if v then v.model:SetAttribute("StoryLit", event.lit) end
+	if not parts then return end
+	for i, part in pairs(parts) do
+		if typeof(part) == "Instance" and part:IsA("BasePart") and part.Parent then
+			local lit = i == event.lit
+			part.Material = if lit then Enum.Material.Neon else Enum.Material.Glass
+			part.Color = if lit then Color3.fromRGB(255, 214, 120) else Color3.fromRGB(70, 60, 95)
+			part:SetAttribute("Lit", lit)
+		end
+	end
+end
 function LairRT.step()
 	for _, event in ipairs(Logic.lrTick()) do
 		local r = event.record
@@ -3942,7 +4104,8 @@ function LairRT.step()
 			if tg.kind == "tiles" then
 				LairRT.lightTiles(r, tg)
 			else
-				broadcast(r.center, "telegraph", {center = tg.center, radius = tg.radius, kind = tg.kind, windup = tg.windup, name = tg.name, boss = r.id})
+				broadcast(r.center, "telegraph", {center = tg.center, radius = tg.radius, kind = tg.kind, windup = tg.windup, name = tg.name, boss = r.id,
+					ux = tg.ux, uz = tg.uz, width = tg.width, length = tg.length}) -- §53: cross / beam / half carry a direction
 			end
 		elseif event.kind == "strike" then
 			local tg = event.telegraph
@@ -3955,6 +4118,8 @@ function LairRT.step()
 			end
 		elseif event.kind == "phase" or event.kind == "stance" or event.kind == "enrage" then
 			LairRT.paintStance(r)
+		elseif event.kind == "lantern" then
+			StoryRT.lantern(event) -- §53 Story: the lit lantern moved
 		elseif event.kind == "adds" then
 			LairRT.spawnAdds(event)
 		elseif event.kind == "timeout" then
@@ -4047,6 +4212,63 @@ do
 	fn.Parent = ServerStorage
 end
 -- End Raids section (runtime).
+
+-- Story section (Story team, runtime; §53) -----------------------------------
+-- server.server.lua's Story block asks ServerStorage.IsleStoryCombat
+-- (BindableFunction, synchronous, never yields):
+--   "spawn"   {fight, boss, center, members = {userId}, seed, lanterns = {[i] = BasePart}?} -> {ok, hp, reason}
+--   "status"  {fight} -> Logic.lrStatus (+ lit = the lit lantern)
+--   "despawn" {fight} -> removes the boss and its adds (no reward).
+-- Telegraphs, adds and lanterns run through LairRT.step.
+do
+	local existing = ServerStorage:FindFirstChild("IsleStoryCombat")
+	local fn = if existing and existing:IsA("BindableFunction") then existing else Instance.new("BindableFunction")
+	fn.Name = "IsleStoryCombat"
+	local function spawnStory(payload)
+		local ST = Data.Story
+		local def = ST and ST.boss(payload.boss)
+		local center = payload.center
+		if not def or type(payload.fight) ~= "string" or typeof(center) ~= "Vector3" then return {ok = false, reason = "invalid"} end
+		if Logic.lrRecord(payload.fight) then return {ok = false, reason = "active"} end
+		local plan = blueprint(def.body, def.color, true)
+		local position = Vector3.new(center.X, center.Y + plan.hip, center.Z + 11)
+		local ok, model, root, parts = pcall(buildModel, def.name, plan, {id = def.id, level = def.level, hp = def.hp, color = def.color})
+		if not ok then
+			warn("[Combat] could not build story encounter " .. def.id .. ": " .. tostring(model))
+			return {ok = false, reason = "build"}
+		end
+		local r = Logic.stRegister(payload.fight, def.id, model, position, {radius = plan.radius, members = payload.members, seed = payload.seed, center = center, ground = center.Y})
+		if not r then model:Destroy() return {ok = false, reason = "register"} end
+		model:SetAttribute("Lair", payload.fight)
+		model:SetAttribute("Story", payload.fight)
+		model:SetAttribute("MaxHealth", r.maxHp)
+		model:SetAttribute("Health", r.hp)
+		view[r] = {model = model, root = root, plan = plan, fill = parts.fill, label = parts.label, welds = parts.welds, phase = 0}
+		StoryRT.lanterns[payload.fight] = type(payload.lanterns) == "table" and payload.lanterns or nil
+		LairRT.paintStance(r)
+		place(r)
+		model.Parent = folder
+		broadcast(position, "death", {position = position, color = def.color, boss = true, scale = plan.scale})
+		return {ok = true, hp = r.maxHp}
+	end
+	fn.OnInvoke = function(op, payload)
+		if type(payload) ~= "table" then return nil end
+		if op == "spawn" then
+			return spawnStory(payload)
+		elseif op == "status" then
+			local status = Logic.lrStatus(payload.fight)
+			if type(status) == "table" then status.lit = Logic.stLit(payload.fight) end
+			return status
+		elseif op == "despawn" then
+			for _, r in ipairs(Logic.lrDespawn(payload.fight)) do destroyView(r, false) end
+			StoryRT.lanterns[payload.fight] = nil
+			return {ok = true}
+		end
+		return nil
+	end
+	fn.Parent = ServerStorage
+end
+-- End Story section (runtime).
 
 -- Skysailing (§51) deck cannons: server.server.lua's sailFire calls
 -- ServerStorage.IsleCannon:Invoke("fire", gunner, {origin, dir, range, cone,

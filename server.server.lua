@@ -217,6 +217,8 @@ local Hearts={verbs={heartPerk=true,heartRespec=true,heartAbility=true},next={},
 local Runebinding={verbs={runeAltar=true,rbIntro=true,rbGate=true,rbWaygate=true,rbTravel=true,rbCombo=true,pouchRepair=true,riftJoin=true,riftLeave=true,riftShape=true,riftCharge=true,riftBuy=true},gseq={}}
 -- Skysailing (§51: ship building, vessels, charting, cargo contracts, salvage, reef fishing, corsairs, crew); filled in by the Skysailing block before perform().
 local Skysailing={verbs={shipwright=true,shipBuild=true,sailLaunch=true,sailDock=true,sailBoard=true,sailLeave=true,sailJump=true,sailRole=true,sailTrim=true,sailFire=true,sailSalvage=true,sailFish=true,harbourBoard=true,sailContract=true,sailAbandon=true,sailRepair=true,sailCrew=true}}
+-- The Sundered Sky (§53: the eight-chapter main story); filled in by the Story block after Skysailing.
+local Story={verbs={storyTalk=true,storyInspect=true,storyPuzzle=true,storyBoss=true,storyLeave=true,storyLamp=true,storyWarp=true}}
 -- One-time coins for each newly reached skill level.
 local function levelCoins(p,skill,newLevel)
 	p.levelRewards=p.levelRewards or {}
@@ -4636,6 +4638,7 @@ local function snapshot(player,message)
 	if QoL.refresh then QoL.refresh(player,p) end -- §41: lectern day roll / timed-out trials, vault interest (notes before the message)
 	if Contests.refresh then Contests.refresh(player,p) end -- §39: close / pay contest entries, contest toasts (before §31 flushes announcements)
 	if Council.refresh then Council.refresh(player,p) end -- §36: re-queue an unacknowledged ballot, phase toasts, p.perkStats.council (before §31 flushes announcements)
+	if Story.refresh then Story.refresh(player,p) end -- §53: encounter step, counting steps settle (before the §33 pin reads the story)
 	if Systems.refresh then Systems.refresh(player,p) end -- §33: goal completions, pinned objective (before §31 flushes announcements)
 	if Features.refresh then Features.refresh(player,p,power) end -- §31: renown, onboarding, resonance (before notes and stats)
 	if Tutorial.refresh then Tutorial.refresh(player,p) end -- §43: the current coach card from this snapshot's Path / quest progress
@@ -4670,6 +4673,7 @@ local function snapshot(player,message)
 		beaconry=Beaconry.state and Beaconry.state(player,p), -- Beaconry (§37): Workshop › Beaconry page state
 		runebinding=Runebinding.state and Runebinding.state(player,p), -- Runebinding (§49): carry, pouches, Rift points, the Glyph Rift round
 		skysailing=Skysailing.state and Skysailing.state(player,p), -- Skysailing (§51): ship, hull, charts, contract, the vessel you are aboard
+		story=Story.state and Story.state(player,p), -- The Sundered Sky (§53): chapters, current step, Quest Points, lamps, puzzle, cutscene, encounter
 		lairs=Lairs.state and Lairs.state(player,p), -- Lairs: Hunt › Bosses (kill counts, personal bests, uniques)
 		raids=Raids.state and Raids.state(player,p), -- Raids (§38): Raid Log (KC, PBs, uniques, points records, titles)
 		feats=Feats.state and Feats.state(player,p), -- Combat Feats (§45): Menu › Feats (points, tier, done, counters, claims, teleports)
@@ -4776,6 +4780,7 @@ local function migrate(profile)
 	if Beaconry.migrate then Beaconry.migrate(profile) end -- Beaconry (§37): p.beaconry, quest flags
 	if Runebinding.migrate then Runebinding.migrate(profile) end -- Runebinding (§49): p.runebinding, quest flags
 	if Skysailing.migrate then Skysailing.migrate(profile) end -- Skysailing (§51): p.skysailing (ship, hull, charts, contract, purse)
+	if Story.migrate then Story.migrate(profile) end -- The Sundered Sky (§53): p.story (chapter, step, base, marks, puzzle, lamps)
 	Explore.migrate(profile) -- Exploration & Factions: p.motes, p.factions, p.perkStats.motes
 	if Lairs.migrate then Lairs.migrate(profile) end -- Lairs: kill counts, personal bests, uniques
 	if Raids.migrate then Raids.migrate(profile) end -- Raids (§38): p.raids Raid Log
@@ -4881,6 +4886,7 @@ local function forget(player)
 	if Crafting.forget then Crafting.forget(player) end -- Crafting: batch job and station visit (session-only)
 	if Beaconry.forget then Beaconry.forget(player) end -- Beaconry (§37): cooking job, kindle cooldown (fires keep burning)
 	if Runebinding.forget then Runebinding.forget(player) end -- Runebinding (§49): Rift membership, bind cadence (travel cooldowns outlive a rejoin)
+	if Story.forget then Story.forget(player) end -- §53: an encounter still open is torn down (no reward)
 	if Skysailing.forget then Skysailing.forget(player) end -- Skysailing (§51): the vessel despawns, its crew are landed (launch cooldowns outlive a rejoin)
 	local set=userSessions[player.UserId]
 	if set then
@@ -8165,6 +8171,7 @@ do
 		local id=p.helperPin
 		if not id then return nil end
 		if id=="contract" then return HP.contractGuide(questState(p)) end
+		if id=="story" then return Story.guide and Story.guide(nil,p) or nil end -- §53 The Sundered Sky
 		local kind,arg=string.match(id,"^(%a+):(%w+)$")
 		if kind=="quest" then
 			local q=Data.QuestById[arg]
@@ -8253,6 +8260,7 @@ do
 			if kind=="quest" and p.questsDone[arg] then return Data.QuestById[arg].title.." is already complete." end
 			if kind=="diary" and whole(p.diaries[arg])>=#Data.DiaryTiers then return Data.DiaryByRegion[arg].name.." is complete." end
 			if item=="contract" and questState(p).complete then return "Every guild contract is complete." end
+			if item=="story" and Data.Story.done(p.story) then return "The Sundered Sky is complete." end
 			p.helperPin=item
 			pinStep[player]=nil -- the reply names the step; no NEW OBJECTIVE toast for the pin itself
 			local g=pinGuide(p)
@@ -11146,6 +11154,8 @@ local function perform(player,verb,item,prompt)
 		return Beaconry.action(player,p,verb,item,prompt) -- Beaconry (§37): kindle, campfire cooking, beacons, weekly claim
 	elseif Runebinding.verbs[verb] then
 		return Runebinding.action(player,p,verb,item,prompt) -- Runebinding (§49): altars, waygates, pouches, combinations, the Glyph Rift
+	elseif Story.verbs[verb] then
+		return Story.action(player,p,verb,item,prompt) -- The Sundered Sky (§53): story talks, set pieces, puzzles, encounters, lamps, the Loomheart
 	elseif Skysailing.verbs[verb] then
 		return Skysailing.action(player,p,verb,item,prompt) -- Skysailing (§51): shipwright, launch / dock, crew, trim, cannons, salvage, reef fishing, contracts
 	elseif Mastery.verbs[verb] then
@@ -12676,6 +12686,7 @@ do
 		if not b then return "Sail within "..SS.DOCK_RANGE.." studs of a skydock you may enter (or your home berth) to dock." end
 		if v.speed>SS.SLOW*2 then return "Slow down to dock." end
 		local extra=deliver(player,p,v,b)
+		if b.kind=="port" and Story.onDock then Story.onDock(player,p,b.port.id) end -- §53: a story "sail" step
 		despawn(v,nil,b)
 		return "You dock "..(if b.kind=="port" then "at the "..b.port.name else "at your Shipwright's Slip").." and step ashore."..extra
 	end
@@ -13188,6 +13199,533 @@ do
 end
 -- <<< END Skysailing <<<
 ------------------------------------------------------------------------------
+-- >>> BEGIN Story (Story team; docs/DEPTH-CONTRACT.md §53) >>>
+-- "The Sundered Sky" (Data.Story = ST): eight chapters, each advanced only by
+-- the current step's own validated event. Profile p.story (ST.migrate):
+-- {v, ch, step, base, marks, puzzle, lamps, cut, seq, lockUntil, tries}. The
+-- chapter index only moves forward, so every reward is granted once. Verbs:
+--   storyTalk <role>        beside that cast NPC (ST.TALK_RADIUS); the first
+--                           talk of a chapter checks its requirements
+--   storyInspect <piece>    prompt only (story.server.lua set pieces)
+--   storyPuzzle <move>      within ST.PUZZLE_RANGE of the puzzle's set piece;
+--                           the puzzle state lives here (ST.parseMove whitelist)
+--   storyBoss <boss>        prompt only, at the encounter's gate: IsleStoryHost
+--                           "open" builds an arena; after ST.WARMUP the boss rises
+--                           through IsleStoryCombat "spawn"; the fight is polled
+--                           (snapshot + the ST.TICK loop) and ends on a win, a
+--                           death, ST.AWAY_SECONDS outside, a timeout, storyLeave
+--                           or a disconnect (Story.depart settles a win first).
+--   storyLeave              leave the encounter (no penalty; the step stays)
+--   storyLamp <Skill>       rub the oldest lamp (ST.lampXp at the skill's level)
+--   storyWarp <id>          the Loomheart fast-travel node (story complete;
+--                           IsleTravelGate, region access, cooldown, FastTravelAt)
+-- Counting steps (collect / kills / craft) compare lifetime totals with the
+-- base stored when the step began. beacon / sail steps are marked by hooks in
+-- Beaconry.beacon and the Skysailing dock. Quest Points: Journal.questPoints
+-- adds ST.points. The helper pin "story" (§33) reads Story.guide.
+------------------------------------------------------------------------------
+do
+	local ST=Data.Story
+	local whole=ST.whole
+	local function journal(p)
+		if type(p.story)~="table" or p.story.v~=ST.VERSION then p.story=ST.migrate(p.story) end
+		return p.story
+	end
+	function Story.migrate(p) p.story=ST.migrate(p.story) end
+	local function rootOf(player)
+		local character=player.Character
+		return character and character:FindFirstChild("HumanoidRootPart")
+	end
+	local function alive(player)
+		local character=player.Character
+		local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+		return humanoid~=nil and humanoid.Health>0
+	end
+	local function push(player,message)
+		if player and player.Parent and profiles[player] then update:FireClient(player,snapshot(player,message)) end
+	end
+	-- Fails closed: a missing anchor refuses the action.
+	local function nearAnchor(player,name,range)
+		local a=Trails.anchor(name)
+		local root=rootOf(player)
+		if not a or not root then return false end
+		local d=root.Position-a.CFrame.Position
+		return Vector3.new(d.X,0,d.Z).Magnitude<=range and math.abs(d.Y)<=range
+	end
+	local function npcNear(player,role)
+		local root=rootOf(player)
+		if not root then return false end
+		local okFind,folder=pcall(function() return workspace:FindFirstChild("Townsfolk") end)
+		if not okFind or not folder then return false end
+		for _,model in ipairs(folder:GetChildren()) do
+			if model:GetAttribute("TownsfolkRole")==role then
+				local npcRoot=model:FindFirstChild("HumanoidRootPart")
+				if npcRoot and (npcRoot.Position-root.Position).Magnitude<=ST.TALK_RADIUS then return true end
+			end
+		end
+		return false
+	end
+	local function busy(player)
+		for _,key in ipairs({"MinigameGame","LairBoss","RaidRun","RaidLobby",ST.FIGHT_FLAG}) do
+			local v=player:GetAttribute(key)
+			if type(v)=="string" and v~="" then return true end
+		end
+		return player:GetAttribute("DungeonInRun")==true
+	end
+	local function lifetime(p,step)
+		if step.kind=="collect" then return whole(p.collection[step.item])
+		elseif step.kind=="kills" then return whole(p.bestiary[step.monster])
+		elseif step.kind=="craft" then return whole(Journal.counters(p).crafts[step.item]) end
+		return 0
+	end
+	local COUNTED={collect=true,kills=true,craft=true}
+	-- have, need for the current step.
+	local function measure(p,s,step)
+		if COUNTED[step.kind] then return math.max(0,lifetime(p,step)-s.base),step.count end
+		if step.kind=="inspect" then
+			local n=0
+			for _,piece in ipairs(step.pieces) do if s.marks[piece] then n+=1 end end
+			return n,#step.pieces
+		end
+		return 0,1
+	end
+	local function reqs(p,ch)
+		local out,all={},true
+		for _,o in ipairs(ch.requires) do
+			local have,need=Journal.measure(p,o)
+			local met=have>=need
+			if not met then all=false end
+			table.insert(out,{text=Data.describeCheck(o),met=met,have=math.min(have,need),need=need})
+		end
+		return out,all
+	end
+	Story.reqs=reqs
+	-- A new current step: counting base, marks, puzzle state, its cutscene.
+	local function enterStep(player,p)
+		local s=journal(p)
+		local _,step=ST.current(s)
+		s.marks={}
+		s.puzzle=nil
+		s.base=0
+		if not step then return end
+		if COUNTED[step.kind] then s.base=lifetime(p,step) end
+		if step.kind=="puzzle" then s.puzzle=ST.puzzleStart(step.puzzle,ST.seedOf(player.UserId)) end
+		if step.cut then
+			s.seq+=1
+			s.cut={id=step.cut,seq=s.seq}
+		end
+	end
+	local function complete(player,p)
+		local s=journal(p)
+		local ch=ST.Chapters[s.ch]
+		local r=ch.rewards
+		for id,n in pairs(r.items or {}) do p.items[id]=(p.items[id] or 0)+n end -- unique, untradeable; never collection
+		for _,lamp in ipairs(r.lamps or {}) do
+			if #s.lamps<ST.MAX_LAMPS then table.insert(s.lamps,{rate=lamp.rate}) end
+		end
+		s.ch+=1
+		s.step=1
+		p.started=true
+		enterStep(player,p)
+		Journal.refresh(p)
+		if Features.announce then Features.announce(p,{kind="story",title=ch.index..". "..ch.title,points=r.points}) end
+		local parts={"Chapter complete • "..ch.title,"+"..(r.points or 0).." Quest Points"}
+		local lamps=#(r.lamps or {})
+		if lamps>0 then table.insert(parts,lamps.." XP lamp"..(if lamps==1 then "" else "s").." (rub in Journal › Story)") end
+		for id,n in pairs(r.items or {}) do table.insert(parts,(if n>1 then n.."× " else "")..Data.Items[id].name) end
+		if r.unlock and r.unlock.warp then table.insert(parts,"fast travel unlocked: "..ST.Warps[r.unlock.warp].name) end
+		if ST.done(s) then table.insert(parts,"THE SUNDERED SKY IS COMPLETE") end
+		return table.concat(parts,"   ·   ")
+	end
+	-- Moves past the current step (the only way a step ever changes).
+	local function advance(player,p)
+		local s=journal(p)
+		local ch=ST.Chapters[s.ch]
+		if not ch then return nil end
+		if s.step>=#ch.steps then return complete(player,p) end
+		s.step+=1
+		enterStep(player,p)
+		p.started=true
+		local _,step=ST.current(s)
+		return "New objective: "..step.text
+	end
+	Story.advance=advance
+	-- Counting steps finish on their own (strikes, kills, crafts).
+	local function settle(player,p)
+		local s=journal(p)
+		local out
+		for _=1,4 do
+			local _,step=ST.current(s)
+			if not step or not COUNTED[step.kind] then break end
+			local have,need=measure(p,s,step)
+			if have<need then break end
+			out=advance(player,p)
+		end
+		return out
+	end
+	Story.settle=settle
+
+	------------------------------------------------------------------------
+	-- Encounters.
+	------------------------------------------------------------------------
+	Story.fights={}
+	Story.warpAt={}
+	local function bindable(name)
+		local fn=ServerStorage:FindFirstChild(name)
+		return fn
+	end
+	local function call(name,op,payload)
+		local fn=bindable(name)
+		if not fn then return nil end
+		local okCall,r=pcall(fn.Invoke,fn,op,payload)
+		return if okCall then r else nil
+	end
+	local function gateOf(boss)
+		for _,piece in ipairs(ST.Pieces) do if piece.boss==boss then return piece end end
+		return nil
+	end
+	local function teardown(player,f)
+		Story.fights[player]=nil
+		call("IsleStoryCombat","despawn",{fight=f.fight})
+		call("IsleStoryHost","close",{fight=f.fight})
+		pcall(function() player:SetAttribute(ST.FIGHT_FLAG,"") end)
+	end
+	local function returnToGate(player,f)
+		local gate=gateOf(f.boss)
+		local a=gate and Trails.anchor("Story_"..gate.id)
+		local character=player.Character
+		local root=rootOf(player)
+		if not a or not root or not alive(player) then return end
+		player:SetAttribute("FastTravelAt",os.clock()) -- server-driven movement (Aether Mote pickup checks)
+		pcall(function() character:PivotTo(CFrame.new(a.CFrame.Position+Vector3.new(0,4,0))) end)
+	end
+	local ENDINGS={died="You were struck down. The gate will open again whenever you are ready.",
+		left="You left the encounter. The gate will open again whenever you are ready.",
+		timeout="The encounter collapsed: time ran out. Try again at the gate.",
+		error="The encounter could not hold. Try again at the gate."}
+	local function finish(player,p,result)
+		local f=Story.fights[player]
+		if not f then return nil end
+		teardown(player,f)
+		if result~="died" then returnToGate(player,f) end
+		return ENDINGS[result]
+	end
+	-- Did the boss fall to this member? Advances the boss step once.
+	local function checkWin(player,p,f)
+		local status=call("IsleStoryCombat","status",{fight=f.fight})
+		if type(status)~="table" or status.alive~=false then return false,status end
+		local outcome=type(status.outcome)=="table" and status.outcome or nil
+		local credit=outcome and type(outcome.credit)=="table" and outcome.credit[player.UserId]
+		if status.result=="win" and type(credit)=="table" and credit.ok==true then
+			local s=journal(p)
+			local _,step=ST.current(s)
+			if s.ch==f.ch and s.step==f.step and step and step.kind=="boss" and step.boss==f.boss then
+				return true,status,advance(player,p)
+			end
+		end
+		return false,status
+	end
+	-- One fight step for one member; returns a message when something happened.
+	function Story.tick(player,p)
+		local f=Story.fights[player]
+		if not f then return nil end
+		local now=os.clock()
+		if not alive(player) then return finish(player,p,"died") end
+		local root=rootOf(player)
+		local away=not root or Vector3.new(root.Position.X-f.center.X,0,root.Position.Z-f.center.Z).Magnitude>ST.ARENA_RANGE
+		if away then
+			f.awayAt=f.awayAt or now
+			if now-f.awayAt>=ST.AWAY_SECONDS then return finish(player,p,"left") end
+		else
+			f.awayAt=nil
+		end
+		if f.state=="warmup" then
+			if now<f.riseAt then return nil end
+			local r=call("IsleStoryCombat","spawn",{fight=f.fight,boss=f.boss,center=f.center,members={player.UserId},party=1,
+				seed=ST.seedOf(player.UserId)+journal(p).seq,lanterns=f.lanterns})
+			if type(r)~="table" or not r.ok then return finish(player,p,"error") end
+			f.state="live"
+			return ST.Bosses[f.boss].short.." rises!"
+		end
+		local won,status,msg=checkWin(player,p,f)
+		if won then
+			finish(player,p,"win")
+			return ST.Bosses[f.boss].name.." is defeated!   ·   "..(msg or "")
+		end
+		if type(status)=="table" and status.alive==false then return finish(player,p,if status.result=="timeout" then "timeout" else "error") end
+		if status==nil then return finish(player,p,"error") end
+		return nil
+	end
+	-- Disconnect: settle a kill that already happened, then tear the arena down.
+	function Story.depart(player)
+		local f=Story.fights[player]
+		if not f then return end
+		local p=profiles[player]
+		if p and f.state=="live" then pcall(checkWin,player,p,f) end
+		teardown(player,f)
+	end
+	function Story.forget(player)
+		local f=Story.fights[player]
+		if f then teardown(player,f) end
+	end
+	function Story.drain()
+		local list={}
+		for player in pairs(Story.fights) do table.insert(list,player) end
+		for _,player in ipairs(list) do Story.depart(player) end
+	end
+	task.spawn(function()
+		while true do
+			task.wait(ST.TICK)
+			local list={}
+			for player in pairs(Story.fights) do table.insert(list,player) end
+			for _,player in ipairs(list) do
+				local p=profiles[player]
+				if p then
+					local okTick,msg=pcall(Story.tick,player,p)
+					if okTick and msg then push(player,msg) end
+				else
+					Story.forget(player)
+				end
+			end
+		end
+	end)
+
+	------------------------------------------------------------------------
+	-- Hooks: beacon and dock steps, Quest Points.
+	------------------------------------------------------------------------
+	function Story.mark(player,p,kind,key)
+		local s=journal(p)
+		local _,step=ST.current(s)
+		if not step or step.kind~=kind then return nil end
+		if (kind=="beacon" and step.beacon~=key) or (kind=="sail" and step.port~=key) then return nil end
+		local msg=advance(player,p)
+		note(p,msg)
+		return msg
+	end
+	if Beaconry.beacon then
+		local beacon=Beaconry.beacon
+		function Beaconry.beacon(player,p,item,prompt)
+			local result=beacon(player,p,item,prompt)
+			local state=type(item)=="string" and Beaconry.beacons[item]
+			if prompt and state and state.untilAt and state.untilAt>os.time() then pcall(Story.mark,player,p,"beacon",item) end
+			return result
+		end
+	end
+	function Story.onDock(player,p,port) pcall(Story.mark,player,p,"sail",port) end
+	local questPoints=Journal.questPoints
+	function Journal.questPoints(p) return questPoints(p)+ST.points(p.story) end
+
+	------------------------------------------------------------------------
+	-- Snapshot, guide, refresh.
+	------------------------------------------------------------------------
+	local function curState(player,p)
+		local s=journal(p)
+		local ch,step=ST.current(s)
+		if not ch then return nil end
+		local list,all=reqs(p,ch)
+		local have,need=measure(p,s,step)
+		return {ch=ch.index,step=s.step,kind=step.kind,npc=step.npc,ready=all,reqs=list,have=have,need=need,
+			marks=table.clone(s.marks),text=ST.stepText(step,have,need)}
+	end
+	function Story.guide(player,p)
+		local cur=curState(player,p)
+		if not cur then return nil end
+		return ST.guide(cur,{access=Systems.accessOf and Systems.accessOf(p) or nil})
+	end
+	function Story.refresh(player,p)
+		local f=Story.fights[player]
+		if f then
+			local okTick,msg=pcall(Story.tick,player,p)
+			if okTick and msg then note(p,msg) end
+		end
+		local msg=settle(player,p)
+		if msg then note(p,msg) end
+		if ST.done(journal(p)) and p.helperPin=="story" then p.helperPin=nil end
+	end
+	function Story.state(player,p)
+		local s=journal(p)
+		local chapters={}
+		for i,ch in ipairs(ST.Chapters) do
+			local list,all=reqs(p,ch)
+			local status=if i<s.ch then "done" elseif i==s.ch then (if s.step>1 then "active" elseif all then "available" else "locked") else "locked"
+			chapters[i]={id=ch.id,status=status,reqs=list}
+		end
+		local lamps={}
+		for i,l in ipairs(s.lamps) do lamps[i]={rate=l.rate} end
+		local puzzle
+		if s.puzzle then
+			puzzle={id=s.puzzle.id,s=table.clone(s.puzzle.s)}
+			if s.puzzle.id=="runelock" then
+				local sol=ST.runeSolution(ST.seedOf(player.UserId))
+				puzzle.clue=sol -- every glyph stone was rubbed to reach the lock
+				puzzle.lockIn=math.max(0,s.lockUntil-os.time())
+			elseif s.puzzle.id=="mirrors" then
+				local lit,path=ST.traceBeam(s.puzzle.s)
+				puzzle.lit,puzzle.path=lit,path
+			end
+		end
+		local f=Story.fights[player]
+		local cur=curState(player,p)
+		if cur then
+			local _,step=ST.current(s)
+			cur.specs=ST.specsFor(step,{marks=s.marks,access=Systems.accessOf and Systems.accessOf(p) or nil})
+		end
+		return {cur=cur,chapters=chapters,qp=ST.points(s),qpMax=ST.maxPoints(),lamps=lamps,puzzle=puzzle,cut=s.cut,
+			unlocked=ST.unlockedCutscenes(s),done=ST.done(s),warps=if ST.done(s) then {Loomheart=true,Quay=true} else nil,
+			fight=f and {boss=f.boss,state=f.state,riseIn=math.max(0,math.ceil(f.riseAt-os.clock()))} or nil,
+			pinned=p.helperPin=="story"}
+	end
+
+	------------------------------------------------------------------------
+	-- Verbs.
+	------------------------------------------------------------------------
+	local function lampTake(p,skill)
+		local s=journal(p)
+		if #s.lamps==0 then return "You have no story XP lamps to rub." end
+		if type(skill)~="string" or not Data.Skills[skill] or not table.find(Data.SkillOrder,skill) then return "Choose a skill for the lamp." end
+		if ST.LAMP_EXCLUDE[skill] then return "A story lamp cannot train "..skill..": earn it through its own activity." end
+		local lamp=table.remove(s.lamps,1)
+		local xp=ST.lampXp(lamp.rate,level(p.xp[skill]))
+		grantXp(p,skill,xp)
+		return "The lamp flares   ·   +"..xp.." "..skill.." XP"..(if #s.lamps>0 then "   ·   "..#s.lamps.." lamp"..(if #s.lamps==1 then "" else "s").." left" else "")
+	end
+	local function puzzleMove(player,p,item)
+		local s=journal(p)
+		local _,step=ST.current(s)
+		local mv=ST.parseMove(item)
+		if not mv then return "That is not a move this puzzle allows." end
+		if not step or step.kind~="puzzle" or step.puzzle~=mv.id or not s.puzzle or s.puzzle.id~=mv.id then return "That puzzle is not part of your story right now." end
+		local def=ST.Puzzles[mv.id]
+		if not nearAnchor(player,"Story_"..def.piece,ST.PUZZLE_RANGE) then return "Stand at the "..def.name.." to work it." end
+		local seed=ST.seedOf(player.UserId)
+		if mv.op=="reset" then
+			s.puzzle=ST.puzzleStart(mv.id,seed)
+			return def.name.." is back as you found it."
+		end
+		if mv.id=="runelock" then
+			if mv.op=="set" then
+				s.puzzle.s[mv.dial]=mv.rune
+				return "Dial "..mv.dial.." set"..(if mv.rune~="" then " to the "..Data.Items[mv.rune].name.." glyph." else " clear.")
+			end
+			local now=os.time()
+			if now<s.lockUntil then return "The dials are still spinning back ("..(s.lockUntil-now).."s)." end
+			local need={}
+			for i=1,ST.DIALS do
+				local r=s.puzzle.s[i]
+				if r=="" then return "Set all four dials first." end
+				need[r]=(need[r] or 0)+1
+			end
+			for r,n in pairs(need) do
+				if (p.items[r] or 0)<n then return "Each dial takes a bound rune: carry "..n.." "..Data.Items[r].name.."." end
+			end
+			if not ST.puzzleSolved(s.puzzle,seed) then
+				s.lockUntil=now+ST.LOCK_LOCKOUT
+				s.tries+=1
+				return "The runes spark and the dials grind back. Wrong order: check your rubbings."
+			end
+			spend(p,need)
+			return "The lock sighs open.   ·   "..advance(player,p)
+		end
+		if mv.id=="stars" then ST.starTurn(s.puzzle.s,mv.ring)
+		else s.puzzle.s[mv.mirror]=1-s.puzzle.s[mv.mirror] end
+		if ST.puzzleSolved(s.puzzle,seed) then
+			return def.name.." clicks into place!   ·   "..advance(player,p)
+		end
+		return if mv.id=="stars" then "Ring "..mv.ring.." turns, and its neighbour with it." else "The mirror swings on its pivot."
+	end
+	local function enter(player,p,item,prompt)
+		local s=journal(p)
+		local _,step=ST.current(s)
+		local def=ST.boss(item)
+		if not prompt then return "Enter an encounter at its gate." end
+		if not def then return "Nothing stirs beyond this gate." end
+		if not step or step.kind~="boss" or step.boss~=item then return "The gate is sealed. Your story has not led you here yet." end
+		if Story.fights[player] then return "You are already inside an encounter." end
+		if busy(player) then return "Finish your lair, raid, minigame or dungeon run first." end
+		local r=call("IsleStoryHost","open",{uid=player.UserId,boss=item})
+		if type(r)~="table" or not r.ok or typeof(r.spawn)~="CFrame" then return "Every encounter hall is in use. Try again in a moment." end
+		local character=player.Character
+		if not character then call("IsleStoryHost","close",{fight=r.fight}) return "Return to your island first." end
+		Story.fights[player]={fight=r.fight,boss=item,ch=s.ch,step=s.step,state="warmup",riseAt=os.clock()+ST.WARMUP,center=r.center,lanterns=r.lanterns}
+		player:SetAttribute(ST.FIGHT_FLAG,item)
+		player:SetAttribute("FastTravelAt",os.clock()) -- server-driven movement (Aether Mote pickup checks)
+		pcall(function() character:PivotTo(r.spawn) end)
+		return "You step into "..def.name.."'s domain. It stirs…"
+	end
+	local function warp(player,p,item)
+		local s=journal(p)
+		local w=type(item)=="string" and ST.Warps[item]
+		if not w then return "Choose a destination." end
+		if not ST.done(s) then return "The Loomheart opens to those who finish The Sundered Sky." end
+		if not regionAllowed(p,w.region) then return regionDenied(w.region) end
+		if busy(player) then return "Finish your encounter, lair, raid, minigame or dungeon run first." end
+		local now=os.clock()
+		local ready=Story.warpAt[player.UserId]
+		if ready and now<ready then return "The thread is still settling ("..math.ceil(ready-now).."s)." end
+		local gate=ServerStorage:FindFirstChild("IsleTravelGate")
+		if not gate then return "The Loomheart will not open right now." end
+		local okGate,verdict=pcall(gate.Invoke,gate,player)
+		if not okGate or verdict~=true then return if okGate and type(verdict)=="string" then verdict else "The Loomheart will not open right now." end
+		local a=Trails.anchor(w.anchor)
+		local character=player.Character
+		local root=rootOf(player)
+		if not a or not root then return "The Loomheart will not open right now." end
+		Story.warpAt[player.UserId]=now+ST.WARP_COOLDOWN
+		player:SetAttribute("FastTravelAt",os.clock()) -- known fast travel (Aether Mote pickup checks)
+		character:PivotTo(CFrame.new(a.CFrame.Position+Vector3.new(0,4,0)))
+		root.AssemblyLinearVelocity=Vector3.zero
+		return "The thread carries you to "..w.name.."."
+	end
+	function Story.action(player,p,verb,item,prompt)
+		local s=journal(p)
+		if verb=="storyLamp" then return lampTake(p,item)
+		elseif verb=="storyWarp" then return warp(player,p,item)
+		elseif verb=="storyLeave" then
+			if not Story.fights[player] then return "You are not inside an encounter." end
+			return finish(player,p,"left")
+		end
+		if ST.done(s) and verb~="storyTalk" then return "The Sundered Sky is complete." end
+		local ch,step=ST.current(s)
+		if verb=="storyTalk" then
+			local c=type(item)=="string" and ST.CastByRole[item]
+			if not c then return "There is no one by that name here." end
+			if not npcNear(player,item) then return "Find "..c.name.." to do that." end
+			if not step or step.kind~="talk" or step.npc~=item then return c.name..": \""..c.greet.."\"" end
+			if s.step==1 then
+				local _,all=reqs(p,ch)
+				if not all then
+					for _,r in ipairs((reqs(p,ch))) do if not r.met then return ch.title.." requires: "..r.text.."." end end
+				end
+			end
+			local reply=c.name..": \""..step.lines.."\""
+			return reply.."   ·   "..advance(player,p)
+		elseif verb=="storyInspect" then
+			local piece=type(item)=="string" and ST.PieceById[item]
+			if not prompt or not piece then return "Inspect it in person." end
+			if not step or step.kind~="inspect" or not table.find(step.pieces,item) then return "Nothing here speaks to you yet." end
+			if s.marks[item] then return "You have already studied this." end
+			s.marks[item]=true
+			local text="You study the "..piece.prompt[2].."."
+			local dial=tonumber(string.match(item,"^GlyphStone(%d)$"))
+			if dial then
+				local rune=ST.runeSolution(ST.seedOf(player.UserId))[dial]
+				text="Your rubbing shows the "..Data.Items[rune].name.." glyph, cut beside "..dial.." notch"..(if dial==1 then "" else "es").."."
+			elseif string.sub(item,1,10)=="LoomThread" then
+				text="You knot the frayed thread back to itself. It holds."
+			end
+			local have,need=measure(p,s,step)
+			if have>=need then return text.."   ·   "..advance(player,p) end
+			return text.."   ·   "..have.."/"..need
+		elseif verb=="storyPuzzle" then
+			return puzzleMove(player,p,item)
+		elseif verb=="storyBoss" then
+			return enter(player,p,item,prompt)
+		end
+		return "Unknown action."
+	end
+end
+-- <<< END Story <<<
+------------------------------------------------------------------------------
 prompts.PromptTriggered:Connect(function(prompt,player)
 	local verb=prompt:GetAttribute("IsleAction")
 	if not verb or not prompt.Enabled then return end
@@ -13211,6 +13749,7 @@ local function close(player)
 	-- Minigames: settle in-match XP before the final save (see minigames.server.lua).
 	pcall(function() local mgLeave=ServerStorage:FindFirstChild("IsleMinigameLeave"); if mgLeave then mgLeave:Invoke(player) end end)
 	Held.forget(player) -- Held items: drop the auto-return timer before the final save
+	if Story.depart then pcall(Story.depart,player) end -- §53: settle an encounter kill before the final save
 	if Skysailing.depart then pcall(Skysailing.depart,player) end -- Skysailing (§51): land the crew, save the hull before the final save
 	for _=1,3 do if persist(player,true) then break end; task.wait(1) end
 	forget(player)
@@ -13258,6 +13797,7 @@ game:BindToClose(function()
 	if Beaconry.flush then pcall(Beaconry.flush,true) end -- §37 QC L1: pending beacon lightings reach the weekly total
 	if Runebinding.drain then pcall(Runebinding.drain) end -- §49 QC L3: a running Glyph Rift round settles as a loss for present members
 	if Skysailing.drain then pcall(Skysailing.drain) end -- §51: every ship docks (crews landed, hulls saved) before the journals save
+	if Story.drain then pcall(Story.drain) end -- §53: settle won encounters and tear the arenas down before the journals save
 	local pending=0
 	for player in pairs(profiles) do
 		pending+=1
